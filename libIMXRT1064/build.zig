@@ -41,7 +41,7 @@ pub fn build(b: *std.Build) !void {
     const ncacheBase = b.option(usize, "ncacheBase", "Base address of NCACHE") orelse 0x81e00000;
     const ncacheSize = b.option(usize, "ncacheSize", "Size of NCACHE") orelse 0x200000;
 
-    const stackSize = b.option(usize, "stackSize", "How big is the stack") orelse 0x4000;
+    const stackSize = b.option(usize, "stackSize", "How big is the supervisor stack") orelse 0x2000;
 
     const opt = b.addOptions();
     opt.addOption(usize, "itcmBase", itcmBase);

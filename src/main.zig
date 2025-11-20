@@ -170,9 +170,6 @@ fn main() !void {
 
     try kernel.createTask(terminal.task);
 
-    // Disable interrupts before enabling SysTick! kernel.go will enable them.
-    asm volatile ("CPSID i");
-
     // Set up low power mode to allow SysTick to keep on keeping on, so WFI doesn't block it!
     imx.clockControlModule.ccm.lowPowerControl.mode = .runMode;
 

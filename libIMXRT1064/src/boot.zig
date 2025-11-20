@@ -218,8 +218,9 @@ fn EntryPointHolder(comptime mainFn: anytype) type {
 
             // Set up to use the thread mode stack while in thread mode.
             // This means that when our stack gets corrupted, it won't cause problems for interrupt handlers.
-            // Also sets up the supervisor stack to start at the top of OCM.
-            const superStack = @as(usize, compconfig.ocmBase + compconfig.ocmSize);
+            // Also sets the supervisor stack to start at the top of DTCM.
+            // Note that in the IMXZIG project, when the scheduler starts, the thread mode stack is completely discarded.
+            const superStack = @intFromPtr(@extern(?*usize, .{ .name = "__supervisor_stack_top" }).?);
             asm volatile (
                 \\MRS R0, MSP
                 \\MSR PSP, R0
@@ -230,28 +231,6 @@ fn EntryPointHolder(comptime mainFn: anytype) type {
                 :
                 : [supervisorStackTop] "r" (superStack),
                 : .{ .r0 = true });
-
-            // The stack is in OCM, because DTCM is not configured yet.
-            // Our new stack starts at dtcmBase + dtcmSize, but this is a cdecl function,
-            //  so the prelude has already put stuff on the stack.
-            // We need to figure out how big our stack frame is, then copy it wholesale
-            //  to where we actually want our stack to be (in DTCM).
-
-            // Figure out where the new stack is
-            var newStack = @as(usize, compconfig.dtcmBase + compconfig.dtcmSize);
-            var sp: usize = 0;
-            var r7: usize = 0;
-            asm volatile (
-                \\MOV %[sp], SP
-                \\MOV %[r7], R7
-                : [sp] "=r" (sp),
-                  [r7] "=r" (r7),
-            );
-            // If we end up with a stack frame size that isn't a multiple of 4, memcpy may fail
-            //  because it's copying
-            // Subtract the size of this function's stack frame (which will become the top frame)
-            const stackFrameSize = r7 - sp;
-            newStack -= stackFrameSize;
 
             // Configures lower half of OCRAM as ITCM
             //  and upper half as DTCM.
@@ -275,19 +254,6 @@ fn EntryPointHolder(comptime mainFn: anytype) type {
                 \\ISB
                 ::: .{ .r0 = true, .r1 = true });
 
-            // Now that DTCM is configured, we can copy our entire stack frame to DTCM, before we change the SP/R7 over.
-            @memcpy(@as([*]u32, @ptrFromInt(newStack))[0 .. stackFrameSize / 4], @as([*]u32, @ptrFromInt(sp))[0 .. stackFrameSize / 4]);
-
-            // Move SP/R7 to our new stack frame
-            asm volatile (
-                \\MOV SP, %[newStack]       // Change stack pointer to point to DTCM
-                \\MOV R7, %[newBp]          // Set base pointer
-                \\EOR LR, LR                // Clear the link register
-                :
-                : [newStack] "r" (newStack),
-                  [newBp] "r" (newStack + (stackFrameSize)),
-                : .{});
-
             // Copy/zero-out sections of RAM we're going to use
             SectionTable.get().setupRegions();
 
@@ -308,7 +274,6 @@ fn EntryPointHolder(comptime mainFn: anytype) type {
             // cache.enableDCache();
             cache.enableICache();
 
-            asm volatile ("CPSID i");
             mainFn() catch |e| {
                 asm volatile ("CPSID i");
                 var errorTraceBuffer: [512]u8 = undefined;

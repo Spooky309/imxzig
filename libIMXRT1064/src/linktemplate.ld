@@ -108,4 +108,24 @@ SECTIONS
         *(.ncache_data*)
         . = ALIGN(4);
     } >NCACHE AT>FLASH =0xFFFFFFFF
+
+    /* Dummy sections to define symbols describing the kernel heap spaces */
+    .ocm_heap : ALIGN(4)
+    {
+        __ocm_heap_begin = .;
+        __ocm_heap_size = LENGTH(OCM) - .;
+    } >OCM
+
+    .dtcm_heap : ALIGN(4)
+    {
+        __dtcm_heap_begin = .;
+        __dtcm_heap_size = LENGTH(DTCM) - (. - ORIGIN(DTCM)) - stackSize;
+    } >DTCM
+
+    /* Dummy section to define where the supervisor stack goes */
+    .supervisor_stack : ALIGN(4)
+    {
+        __supervisor_stack_top = ORIGIN(DTCM) + LENGTH(DTCM);
+        __supervisor_stack_bottom = __supervisor_stack_top - stackSize;
+    } >DTCM
 }

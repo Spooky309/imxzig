@@ -1,7 +1,7 @@
 const std = @import("std");
 const imx = @import("libIMXRT1064");
 
-const Registers = extern struct {
+const InterruptReturnState = extern struct {
     R4: usize = 0,
     R5: usize = 0,
     R6: usize = 0,
@@ -10,6 +10,8 @@ const Registers = extern struct {
     R9: usize = 0,
     R10: usize = 0,
     R11: usize = 0,
+    SP: usize = 0,
+    excReturn: usize = 0,
 };
 
 const InterruptStackFrame = extern struct {
@@ -25,9 +27,8 @@ const InterruptStackFrame = extern struct {
 
 const TaskControlBlock = struct {
     node: std.DoublyLinkedList.Node = .{},
-    regs: Registers = .{},
-    SP: usize = 0,
-    excReturn: usize = 0,
+    returnState: InterruptReturnState = .{},
+    stack: []u8 = &.{},
 };
 
 const TASK_STACK_SIZE = 1024;
@@ -35,7 +36,7 @@ const TASK_STACK_SIZE = 1024;
 var tcbPool: std.heap.MemoryPool(TaskControlBlock) = undefined;
 
 var activeTcbs = std.DoublyLinkedList{};
-var currentTcb: *TaskControlBlock = undefined;
+var currentTcb: ?*TaskControlBlock = undefined;
 
 const GPA = std.heap.DebugAllocator(.{
     .never_unmap = true,
@@ -106,14 +107,16 @@ fn switchIntoTask(tcb: *TaskControlBlock) void {
         \\MOV LR, %[excReturn]
         \\BX LR
         :
-        : [regs] "r" (&tcb.regs),
-          [sp] "r" (tcb.SP),
-          [excReturn] "r" (tcb.excReturn),
+        : [regs] "r" (&tcb.returnState.R4),
+          [sp] "r" (tcb.returnState.SP),
+          [excReturn] "r" (tcb.returnState.excReturn),
         : .{ .r0 = true });
 }
 
 pub fn svcHandler() callconv(.c) void {
     @setRuntimeSafety(false);
+    var callerState: InterruptReturnState = undefined;
+    var switchTasks = false;
 
     // Save caller state - we may have to change to another task
     asm volatile (
@@ -122,37 +125,46 @@ pub fn svcHandler() callconv(.c) void {
         \\STR R0, [%[sp]]
         \\STR LR, [%[excReturn]]
         :
-        : [regs] "r" (&currentTcb.regs),
-          [sp] "r" (&currentTcb.SP),
-          [excReturn] "r" (&currentTcb.excReturn),
+        : [regs] "r" (&callerState.R4),
+          [sp] "r" (&callerState.SP),
+          [excReturn] "r" (&callerState.excReturn),
         : .{ .r0 = true });
 
-    const stackFrame: *InterruptStackFrame = @ptrFromInt(currentTcb.SP);
-    const syscallType: Syscall = @enumFromInt(stackFrame.R0);
+    // Instead of an optional, would it be better to use a self-modifying function pointer here?
+    // https://github.com/Spooky309/imxzig/issues/5
+    if (currentTcb) |tcb| {
+        tcb.returnState = callerState;
 
-    var switchTasks = false;
+        const stackFrame: *InterruptStackFrame = @ptrFromInt(callerState.SP);
+        const syscallType: Syscall = @enumFromInt(stackFrame.R0);
 
-    switch (syscallType) {
-        .yield => {
-            switchTasks = true;
-        },
-        .terminateCurrentTask => {
-            switchTasks = true;
-            activeTcbs.remove(&currentTcb.node);
-            tcbPool.destroy(currentTcb);
-            // TODO: Allocate the stack more effectively so we can return the stack
-        },
+        switch (syscallType) {
+            .yield => {
+                switchTasks = true;
+            },
+            .terminateCurrentTask => {
+                switchTasks = true;
+                activeTcbs.remove(&tcb.node);
+                gpa.allocator().free(tcb.stack);
+                tcbPool.destroy(tcb);
+            },
+        }
+    } else {
+        switchTasks = true;
     }
 
     if (switchTasks) {
         currentTcb = @fieldParentPtr("node", activeTcbs.popFirst().?);
-        activeTcbs.append(&currentTcb.node);
+        activeTcbs.append(&currentTcb.?.node);
     }
 
-    switchIntoTask(currentTcb);
+    switchIntoTask(currentTcb.?);
 }
 
 pub fn systickHandler() callconv(.c) void {
+    @setRuntimeSafety(false);
+    var callerState: InterruptReturnState = undefined;
+
     // Save caller state - we may have to change to another task
     asm volatile (
         \\STM %[regs], {R4-R11}
@@ -160,35 +172,26 @@ pub fn systickHandler() callconv(.c) void {
         \\STR R0, [%[sp]]
         \\STR LR, [%[excReturn]]
         :
-        : [regs] "r" (&currentTcb.regs),
-          [sp] "r" (&currentTcb.SP),
-          [excReturn] "r" (&currentTcb.excReturn),
+        : [regs] "r" (&callerState.R4),
+          [sp] "r" (&callerState.SP),
+          [excReturn] "r" (&callerState.excReturn),
         : .{ .r0 = true });
 
-    currentTcb = @fieldParentPtr("node", activeTcbs.popFirst().?);
-    activeTcbs.append(&currentTcb.node);
+    // If there is no currentTcb, that means the scheduler isn't started yet, so ignore, and just return.
+    // Same as above: https://github.com/Spooky309/imxzig/issues/5
+    if (currentTcb) |tcb| {
+        tcb.returnState = callerState;
 
-    switchIntoTask(currentTcb);
+        currentTcb = @fieldParentPtr("node", activeTcbs.popFirst().?);
+        activeTcbs.append(&currentTcb.?.node);
+
+        switchIntoTask(currentTcb.?);
+    }
 }
 
 pub fn init() !void {
-    const sectionTable = imx.boot.SectionTable.get();
-
-    var highestDTCMAddr = imx.compconfig.dtcmBase;
-    var highestDTCMAddrSize: usize = 0;
-
-    for (sectionTable.entries) |section| {
-        if (section.addr >= imx.compconfig.dtcmBase and section.addr < imx.compconfig.dtcmBase + imx.compconfig.dtcmSize) {
-            if (section.addr + section.size > highestDTCMAddr) {
-                highestDTCMAddr = section.addr;
-                highestDTCMAddrSize = section.size;
-            }
-        }
-    }
-
-    const SUPERVISOR_STACK_SIZE = 8192;
-    const kernelHeapBase = highestDTCMAddr + highestDTCMAddrSize;
-    const kernelHeapSize = (imx.compconfig.dtcmBase + imx.compconfig.dtcmSize - SUPERVISOR_STACK_SIZE) - kernelHeapBase;
+    const kernelHeapBase = @intFromPtr(@extern(?*usize, .{ .name = "__dtcm_heap_begin" }).?);
+    const kernelHeapSize = @intFromPtr(@extern(?*usize, .{ .name = "__dtcm_heap_size" }).?);
 
     gpaBacking = std.heap.FixedBufferAllocator.init(@as([*]u8, @ptrFromInt(kernelHeapBase))[0..kernelHeapSize]);
     gpa = .{ .backing_allocator = gpaBacking.allocator() };
@@ -198,18 +201,17 @@ pub fn init() !void {
 
 pub fn createTask(entry: anytype) !void {
     var newTcb = try tcbPool.create();
-    var sp = try gpa.allocator().alignedAlloc(u8, .@"8", TASK_STACK_SIZE);
+    const stack = try gpa.allocator().alignedAlloc(u8, .@"8", TASK_STACK_SIZE);
     newTcb.* = .{
-        .regs = .{
-            .R7 = @intFromPtr(&sp.ptr[sp.len]),
+        .returnState = .{
+            .R7 = @intFromPtr(&stack.ptr[stack.len]),
+            .SP = @intFromPtr(&stack.ptr[stack.len - @sizeOf(InterruptStackFrame)]),
+            .excReturn = 0xFFFFFFFD, // Thread mode with PSP stack
         },
-        .SP = @intFromPtr(&sp.ptr[sp.len]) - @sizeOf(InterruptStackFrame),
+        .stack = stack,
     };
 
-    // Return into thread mode with PSP stack
-    newTcb.excReturn = 0xFFFFFFFD;
-
-    var newStack = @as(*InterruptStackFrame, @ptrFromInt(newTcb.SP));
+    var newStack = @as(*InterruptStackFrame, @ptrFromInt(newTcb.returnState.SP));
 
     newStack.* = .{};
     newStack.PC = @intFromPtr(&TaskEntryPoint(entry).entry);
@@ -217,16 +219,15 @@ pub fn createTask(entry: anytype) !void {
     activeTcbs.append(&newTcb.node);
 }
 
-// Interrupts should be disabled coming into here, we don't want systick going off while we're setting up.
-pub fn go() !noreturn {
-    // Create a TCB for this context, it will be the idle task.
-    var tcb = try tcbPool.create();
-    activeTcbs.append(&tcb.node);
-    currentTcb = tcb;
-    // This lets the SysTick interrupt go off, so it'll start scheduling.
-    asm volatile ("CPSIE i");
-    // Idle
+fn idleTask() void {
     while (true) {
         asm volatile ("WFI");
     }
+}
+
+pub fn go() !noreturn {
+    try createTask(idleTask);
+    // SVC handler will set things up for us on its initial entry.
+    Syscall.yield.do();
+    unreachable;
 }
