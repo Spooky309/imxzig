@@ -1,21 +1,79 @@
 const compconfig = @import("compconfig");
 const std = @import("std");
 
-// This can be split up, the first part of the VectorTable should be in M7.
+pub const ReturnState = extern struct {
+    SP: usize = 0,
+    excReturn: usize = 0,
+    R4: usize = 0,
+    R5: usize = 0,
+    R6: usize = 0,
+    R7: usize = 0,
+    R8: usize = 0,
+    R9: usize = 0,
+    R10: usize = 0,
+    R11: usize = 0,
+};
 
-pub const InterruptHandler = ?*const fn () callconv(.c) void;
+pub const InterruptHandler = ?*const fn () callconv(.naked) void;
+
+pub fn makeISR(comptime func: anytype) *const fn () callconv(.naked) void {
+    const ft = @typeInfo(@typeInfo(@TypeOf(func)).pointer.child);
+
+    if (ft.@"fn".calling_convention != .arm_aapcs_vfp and ft.@"fn".calling_convention != .arm_aapcs) {
+        @compileError("makeISR: Function must be C calling convention.");
+    }
+    if (ft.@"fn".params.len > 1) {
+        @compileError("makeISR: Function must have 0-1 parameters.");
+    }
+    if (ft.@"fn".params.len == 1 and ft.@"fn".params[0].type.? != ReturnState) {
+        @compileError("makeISR: Function parameter must be a ReturnState type");
+    }
+
+    if (ft.@"fn".params.len == 1) {
+        return struct {
+            pub fn isr() callconv(.naked) void {
+                asm volatile (
+                    \\PUSH {LR}
+                    \\
+                    \\MRS R0, PSP
+                    \\MOV R1, LR
+                    \\MOV R2, R4
+                    \\MOV R3, R5
+                    \\PUSH {R6-R11}
+                    \\
+                    \\BL %[theHandler]
+                    \\
+                    \\ADD SP, #40
+                    \\POP {PC}
+                    :
+                    : [theHandler] "X" (func),
+                );
+            }
+        }.isr;
+    } else {
+        return struct {
+            pub fn isr() callconv(.naked) void {
+                asm volatile (
+                    \\B %[theHandler]
+                    :
+                    : [theHandler] "X" (func),
+                );
+            }
+        }.isr;
+    }
+}
 
 // Longest interrupt name is GPIO5_Combined_16_31, which is 20 characters.
 // So, the message "Unhandled interrupt: GPIO5_Combined_16_31\n" is 42 characters.
 // I give a little extra space just in case something bigger is here in the future.
 var panickingISRBuffer: [64]u8 = undefined;
-fn makePanickingISR(comptime name: []const u8) type {
+fn makePanickingISR(comptime name: []const u8) *const fn () callconv(.c) void {
     return struct {
         pub fn interruptHandler() callconv(.c) void {
             const msg = std.fmt.comptimePrint("Unhandled interrupt: {s}\n", .{name});
             @panic(msg);
         }
-    };
+    }.interruptHandler;
 }
 
 pub fn makeIVT(comptime overrides: VectorTable) VectorTable {
@@ -26,14 +84,15 @@ pub fn makeIVT(comptime overrides: VectorTable) VectorTable {
         // Don't generate default ISR handler for resetISR, because it's the first thing we run when we start up!
         //  If not set, it will be filled in by boot.zig later.
         if (field.type == InterruptHandler and !std.mem.eql(u8, field.name, "reset") and @field(ret, field.name) == null) {
-            const isr = makePanickingISR(field.name);
-            @field(ret, field.name) = &isr.interruptHandler;
+            const isr = makeISR(makePanickingISR(field.name));
+            @field(ret, field.name) = isr;
         }
     }
 
     return ret;
 }
 
+// This can be split up, the first part of the VectorTable should be in M7.
 pub const VectorTable = extern struct {
     // CM7 defined
     initialStackTop: u32 = compconfig.ocmBase + compconfig.ocmSize, // Put stack at top of OCM, we will move it after we configure DTCM

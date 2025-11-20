@@ -1,18 +1,7 @@
 const std = @import("std");
 const imx = @import("libIMXRT1064");
 
-const InterruptReturnState = extern struct {
-    R4: usize = 0,
-    R5: usize = 0,
-    R6: usize = 0,
-    R7: usize = 0,
-    R8: usize = 0,
-    R9: usize = 0,
-    R10: usize = 0,
-    R11: usize = 0,
-    SP: usize = 0,
-    excReturn: usize = 0,
-};
+const interrupt = imx.interrupt;
 
 const InterruptStackFrame = extern struct {
     R0: usize = 0,
@@ -27,7 +16,7 @@ const InterruptStackFrame = extern struct {
 
 const TaskControlBlock = struct {
     node: std.DoublyLinkedList.Node = .{},
-    returnState: InterruptReturnState = .{},
+    returnState: interrupt.ReturnState = .{},
     stack: []u8 = &.{},
 };
 
@@ -118,29 +107,16 @@ fn switchIntoTask(tcb: *TaskControlBlock) void {
         : .{ .r0 = true });
 }
 
-pub fn svcHandler() callconv(.c) void {
+pub fn svcHandler(irs: interrupt.ReturnState) callconv(.c) void {
     @setRuntimeSafety(false);
-    var callerState: InterruptReturnState = undefined;
     var switchTasks = false;
-
-    // Save caller state - we may have to change to another task
-    asm volatile (
-        \\STM %[regs], {R4-R11}
-        \\MRS R0, PSP
-        \\STR R0, [%[sp]]
-        \\STR LR, [%[excReturn]]
-        :
-        : [regs] "r" (&callerState.R4),
-          [sp] "r" (&callerState.SP),
-          [excReturn] "r" (&callerState.excReturn),
-        : .{ .r0 = true });
 
     // Instead of an optional, would it be better to use a self-modifying function pointer here?
     // https://github.com/Spooky309/imxzig/issues/5
     if (currentTcb) |tcb| {
-        tcb.returnState = callerState;
+        tcb.returnState = irs;
 
-        const stackFrame: *InterruptStackFrame = @ptrFromInt(callerState.SP);
+        const stackFrame: *InterruptStackFrame = @ptrFromInt(irs.SP);
         const syscallType: Syscall = @enumFromInt(stackFrame.R0);
 
         switch (syscallType) {
@@ -165,26 +141,13 @@ pub fn svcHandler() callconv(.c) void {
     }
 }
 
-pub fn systickHandler() callconv(.c) void {
+pub fn systickHandler(irs: interrupt.ReturnState) callconv(.c) void {
     @setRuntimeSafety(false);
-    var callerState: InterruptReturnState = undefined;
-
-    // Save caller state - we may have to change to another task
-    asm volatile (
-        \\STM %[regs], {R4-R11}
-        \\MRS R0, PSP
-        \\STR R0, [%[sp]]
-        \\STR LR, [%[excReturn]]
-        :
-        : [regs] "r" (&callerState.R4),
-          [sp] "r" (&callerState.SP),
-          [excReturn] "r" (&callerState.excReturn),
-        : .{ .r0 = true });
 
     // If there is no currentTcb, that means the scheduler isn't started yet, so ignore, and just return.
     // Same as above: https://github.com/Spooky309/imxzig/issues/5
     if (currentTcb) |tcb| {
-        tcb.returnState = callerState;
+        tcb.returnState = irs;
 
         currentTcb = @fieldParentPtr("node", activeTcbs.popFirst().?);
         activeTcbs.append(&currentTcb.?.node);

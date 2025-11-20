@@ -199,9 +199,15 @@ pub const SectionTable = struct {
 var sectionTable: SectionTable = undefined;
 
 // Main entry point (after resetISR sets up the RAM for us)
-fn EntryPointHolder(comptime mainFn: anytype) type {
+fn makeResetISR(comptime mainFn: anytype) *const fn () callconv(.naked) void {
     return struct {
-        pub fn resetISR() callconv(.c) noreturn {
+        pub fn resetISR() callconv(.naked) noreturn {
+            asm volatile ("B %[enter]"
+                :
+                : [enter] "X" (&enter),
+            );
+        }
+        fn enter() callconv(.c) noreturn {
             @setRuntimeSafety(false);
             asm volatile ("CPSID i"); // Manual says Boot ROM disables interrupts for us, but I don't trust it.
 
@@ -292,7 +298,7 @@ fn EntryPointHolder(comptime mainFn: anytype) type {
             asm volatile ("CPSID i");
             @panic("main returned");
         }
-    };
+    }.resetISR;
 }
 
 pub fn Config(comptime mainFnType: type) type {
@@ -306,7 +312,7 @@ pub fn Config(comptime mainFnType: type) type {
 fn fixupIVTEntryPointIfNecessary(comptime config: anytype) interrupt.VectorTable {
     var i = config.interruptVectorTable;
     if (i.reset == null) {
-        i.reset = &EntryPointHolder(config.mainFn).resetISR;
+        i.reset = makeResetISR(config.mainFn);
     }
     return i;
 }
