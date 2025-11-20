@@ -63,8 +63,8 @@ comptime {
             .mainFn = main,
             .interruptVectorTable = imx.interrupt.makeIVT(.{
                 // Override interrupt vectors here!
-                .sysTick = kernel.systickHandler,
-                .svc = kernel.svcHandler,
+                .sysTick = imx.interrupt.makeISR(&kernel.systickHandler),
+                .svc = imx.interrupt.makeISR(&kernel.svcHandler),
             }),
         },
     });
