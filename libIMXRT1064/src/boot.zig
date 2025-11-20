@@ -277,7 +277,7 @@ fn makeResetISR(comptime mainFn: anytype) *const fn () callconv(.naked) void {
             systick.controlAndStatus.enabled = false;
 
             // Enable caches
-            // cache.enableDCache();
+            cache.enableDCache();
             cache.enableICache();
 
             mainFn() catch |e| {
