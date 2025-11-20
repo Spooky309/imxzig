@@ -69,17 +69,26 @@ pub const Syscall = enum(u8) {
 
 fn TaskEntryPoint(e: anytype) type {
     return struct {
-        pub fn entry() void {
+        pub fn entry() callconv(.c) void {
             asm volatile ("CPSIE i");
+            if (@typeInfo(@TypeOf(e)).@"fn".params.len != 0) {
+                @compileError("createTask doesn't support arguments... yet.");
+            }
             const rType = @typeInfo(@TypeOf(e)).@"fn".return_type.?;
             switch (@typeInfo(rType)) {
-                .error_union => {
+                .error_union => |t| {
+                    if (t.payload != void) {
+                        @compileError("Function passed into createTask should return void, or an error union with void.");
+                    }
                     e() catch {
                         // Print error?
                     };
                 },
-                else => {
+                .void => {
                     e();
+                },
+                else => {
+                    @compileError("Function passed into createTask should return void, or an error union with void.");
                 },
             }
             Syscall.terminateCurrentTask.do();
