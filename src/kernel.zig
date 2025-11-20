@@ -101,15 +101,20 @@ fn TaskEntryPoint(e: anytype) type {
 
 fn switchIntoTask(tcb: *TaskControlBlock) void {
     @setRuntimeSafety(false);
+    // We want to reset MSP to the top of the supervisor stack, otherwise, it never gets changed and every time
+    //  this function gets called it climbs a bit lower, until it starts corrupting the heap.
+    const superStack = @intFromPtr(@extern(?*usize, .{ .name = "__supervisor_stack_top" }).?);
     asm volatile (
         \\LDM %[regs], {r4-r11}
         \\MSR PSP, %[sp]
         \\MOV LR, %[excReturn]
+        \\MOV SP, %[kStackTop]
         \\BX LR
         :
         : [regs] "r" (&tcb.returnState.R4),
           [sp] "r" (tcb.returnState.SP),
           [excReturn] "r" (tcb.returnState.excReturn),
+          [kStackTop] "r" (superStack),
         : .{ .r0 = true });
 }
 
@@ -156,9 +161,8 @@ pub fn svcHandler() callconv(.c) void {
     if (switchTasks) {
         currentTcb = @fieldParentPtr("node", activeTcbs.popFirst().?);
         activeTcbs.append(&currentTcb.?.node);
+        switchIntoTask(currentTcb.?);
     }
-
-    switchIntoTask(currentTcb.?);
 }
 
 pub fn systickHandler() callconv(.c) void {
