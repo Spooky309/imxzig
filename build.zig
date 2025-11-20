@@ -65,7 +65,9 @@ pub fn build(b: *std.Build) !void {
         break :blk .{ &objCopyRun.step, objCopyRun.getOutput() };
     };
 
+    const install_exe = b.addInstallArtifact(mainProgram, .{});
     const install_bin = b.addInstallBinFile(bin.@"1", "./imxzig.bin");
     install_bin.step.dependOn(bin.@"0");
+    b.getInstallStep().dependOn(&install_exe.step);
     b.getInstallStep().dependOn(&install_bin.step);
 }
