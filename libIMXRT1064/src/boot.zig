@@ -155,7 +155,10 @@ const BootHeader = extern struct {
     flashConfig: FlashConfig,
     // the image vector table needs to be at offset 0x1000 for FlexSPI NOR boot devices.
     // this will obviously cause a compile error if the size of FlashConfig exceeds 0x1000
-    imageVectorTable: ImageVectorTable align(0x1000),
+    // we use this FF padding instead of align because we don't want to write zeroes to flash when we don't have to!
+    // maybe zig has an option to use a certain byte for alignment padding?
+    _pad0: [0x1000 - @sizeOf(FlashConfig)]u8 = @splat(0xFF),
+    imageVectorTable: ImageVectorTable,
     bootData: BootData = .{},
 };
 
