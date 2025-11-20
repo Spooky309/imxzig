@@ -1,0 +1,11 @@
+.{
+    .name = .libIMXRT1064,
+    .version = "0.0.1",
+    .fingerprint = 0x301481c514138944,
+    .minimum_zig_version = "0.16.0-dev.1334+06d08daba",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
