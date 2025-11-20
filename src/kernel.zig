@@ -40,11 +40,25 @@ const GPA = std.heap.DebugAllocator(.{
 var gpaBacking: std.heap.FixedBufferAllocator = undefined;
 var gpa: GPA = undefined;
 
-pub const Syscall = enum(u8) {
-    yield = 0,
-    terminateCurrentTask = 1,
+pub const Syscall = struct {
+    pub const Code = enum(u8) {
+        sleep = 0,
+        terminateTask = 1,
+    };
 
-    pub inline fn do(comptime self: @This()) void {
+    pub fn sleep(ms: u32) void {
+        asm volatile ("MOV R4, %[ms]"
+            :
+            : [ms] "r" (ms),
+            : .{ .r4 = true });
+        do(Code.sleep);
+    }
+
+    pub fn terminateTask() void {
+        do(Code.terminateTask);
+    }
+
+    inline fn do(comptime code: Code) void {
         // Ensure interrupts are enabled, or else SVC faults.
         asm volatile ("CPSIE i");
 
@@ -52,7 +66,7 @@ pub const Syscall = enum(u8) {
         //  there is no constraint for 0-255, so this is all we get.
         asm volatile ("SVC %[code]"
             :
-            : [code] "j" (@intFromEnum(self)),
+            : [code] "j" (@intFromEnum(code)),
         );
     }
 };
@@ -83,7 +97,7 @@ fn TaskEntryPoint(e: anytype) type {
                     @compileError("Function passed into createTask should return void, or an error union with void.");
                 },
             }
-            Syscall.terminateCurrentTask.do();
+            Syscall.terminateTask();
         }
     };
 }
@@ -117,13 +131,13 @@ pub fn svcHandler(irs: interrupt.ReturnState) callconv(.c) void {
         tcb.returnState = irs;
 
         const stackFrame: *InterruptStackFrame = @ptrFromInt(irs.SP);
-        const syscallType: Syscall = @enumFromInt(stackFrame.R0);
+        const syscallType: Syscall.Code = @enumFromInt(stackFrame.R0);
 
         switch (syscallType) {
-            .yield => {
+            .sleep => {
                 switchTasks = true;
             },
-            .terminateCurrentTask => {
+            .terminateTask => {
                 switchTasks = true;
                 activeTcbs.remove(&tcb.node);
                 gpa.allocator().free(tcb.stack);
@@ -195,6 +209,6 @@ fn idleTask() void {
 pub fn go() !noreturn {
     try createTask(idleTask);
     // SVC handler will set things up for us on its initial entry.
-    Syscall.yield.do();
+    Syscall.sleep(0);
     unreachable;
 }
