@@ -69,13 +69,15 @@ pub const Syscall = enum(u8) {
 
 fn TaskEntryPoint(e: anytype) type {
     return struct {
+        const entryInfo = @typeInfo(@TypeOf(e)).@"fn";
+
+        // Should we allow functions passed in here to
         pub fn entry() callconv(.c) void {
             asm volatile ("CPSIE i");
-            if (@typeInfo(@TypeOf(e)).@"fn".params.len != 0) {
+            if (entryInfo.params.len != 0) {
                 @compileError("createTask doesn't support arguments... yet.");
             }
-            const rType = @typeInfo(@TypeOf(e)).@"fn".return_type.?;
-            switch (@typeInfo(rType)) {
+            switch (@typeInfo(entryInfo.return_type.?)) {
                 .error_union => |t| {
                     if (t.payload != void) {
                         @compileError("Function passed into createTask should return void, or an error union with void.");
