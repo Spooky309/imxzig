@@ -15,13 +15,20 @@ const InterruptStackFrame = extern struct {
 };
 
 const TaskControlBlock = struct {
+    name: []const u8,
     node: std.DoublyLinkedList.Node = .{},
     returnState: interrupt.ReturnState = .{},
     stack: []u8 = &.{},
 };
 
-const TASK_STACK_SIZE = 1024;
+const DEBUG_SCHEDULER = false;
 
+const TASK_STACK_SIZE = 8192;
+
+// These are initialized in the init function below. They cannot be initialized at comptime
+//  because we don't know where the kernel's heap begins, or how big it is until after linking.
+var gpaBacking: std.heap.FixedBufferAllocator = undefined;
+var gpa: GPA = undefined;
 var tcbPool: std.heap.MemoryPool(TaskControlBlock) = undefined;
 
 var activeTcbs = std.DoublyLinkedList{};
@@ -35,10 +42,6 @@ const GPA = std.heap.DebugAllocator(.{
     //  considering we only have 512KiB minus .data and .bss!
     .page_size = 16 * 1024,
 });
-
-// These are initialized in the init function below
-var gpaBacking: std.heap.FixedBufferAllocator = undefined;
-var gpa: GPA = undefined;
 
 pub const Syscall = struct {
     pub const Code = enum(u8) {
@@ -102,8 +105,20 @@ fn TaskEntryPoint(e: anytype) type {
     };
 }
 
-fn switchIntoTask(tcb: *TaskControlBlock) void {
+fn scheduler() noreturn {
     @setRuntimeSafety(false);
+
+    // Very simple round-robin.
+    const tcb: *TaskControlBlock = @fieldParentPtr("node", activeTcbs.popFirst().?);
+    currentTcb = tcb;
+    activeTcbs.append(&tcb.node);
+
+    if (DEBUG_SCHEDULER) {
+        var writer = imx.lpuart.lpuart1.writer();
+        writer.print("switching into {s}\n", .{tcb.name}) catch {};
+        writer.print("read return state: {}\n", .{tcb.returnState}) catch {};
+    }
+
     // We want to reset MSP to the top of the supervisor stack, otherwise, it never gets changed and every time
     //  this function gets called it climbs a bit lower, until it starts corrupting the heap.
     const superStack = @intFromPtr(@extern(?*usize, .{ .name = "__supervisor_stack_top" }).?);
@@ -118,17 +133,25 @@ fn switchIntoTask(tcb: *TaskControlBlock) void {
           [sp] "r" (tcb.returnState.SP),
           [excReturn] "r" (tcb.returnState.excReturn),
           [kStackTop] "r" (superStack),
-        : .{ .r0 = true });
+    );
+
+    unreachable;
 }
 
 pub fn svcHandler(irs: interrupt.ReturnState) callconv(.c) void {
     @setRuntimeSafety(false);
+    var writer = imx.lpuart.lpuart1.writer();
     var switchTasks = false;
 
     // Instead of an optional, would it be better to use a self-modifying function pointer here?
     // https://github.com/Spooky309/imxzig/issues/5
     if (currentTcb) |tcb| {
         tcb.returnState = irs;
+
+        if (DEBUG_SCHEDULER) {
+            writer.print("svc from: {s} (SP: {})\n", .{ tcb.name, tcb.returnState.SP }) catch {};
+            writer.print("written return state: {}\n", .{irs}) catch {};
+        }
 
         const stackFrame: *InterruptStackFrame = @ptrFromInt(irs.SP);
         const syscallType: Syscall.Code = @enumFromInt(stackFrame.R0);
@@ -149,40 +172,32 @@ pub fn svcHandler(irs: interrupt.ReturnState) callconv(.c) void {
     }
 
     if (switchTasks) {
-        currentTcb = @fieldParentPtr("node", activeTcbs.popFirst().?);
-        activeTcbs.append(&currentTcb.?.node);
-        switchIntoTask(currentTcb.?);
+        scheduler();
     }
 }
 
 pub fn systickHandler(irs: interrupt.ReturnState) callconv(.c) void {
     @setRuntimeSafety(false);
-
     // If there is no currentTcb, that means the scheduler isn't started yet, so ignore, and just return.
     // Same as above: https://github.com/Spooky309/imxzig/issues/5
     if (currentTcb) |tcb| {
         tcb.returnState = irs;
-
-        currentTcb = @fieldParentPtr("node", activeTcbs.popFirst().?);
-        activeTcbs.append(&currentTcb.?.node);
-
-        switchIntoTask(currentTcb.?);
+        if (DEBUG_SCHEDULER) {
+            var writer = imx.lpuart.lpuart1.writer();
+            writer.print("systick from: {s} (SP: {})\n", .{ tcb.name, tcb.returnState.SP }) catch {};
+            writer.print("written return state: {}\n", .{irs}) catch {};
+        }
+        scheduler();
     }
 }
 
-pub fn init() !void {
-    const kernelHeapBase = @intFromPtr(@extern(?*usize, .{ .name = "__dtcm_heap_begin" }).?);
-    const kernelHeapSize = @intFromPtr(@extern(?*usize, .{ .name = "__dtcm_heap_size" }).?);
-
-    gpaBacking = std.heap.FixedBufferAllocator.init(@as([*]u8, @ptrFromInt(kernelHeapBase))[0..kernelHeapSize]);
-    gpa = .{ .backing_allocator = gpaBacking.allocator() };
-
-    tcbPool = std.heap.MemoryPool(TaskControlBlock).init(gpa.allocator());
-}
-
-pub fn createTask(entry: anytype) !void {
+pub fn createTask(name: []const u8, entry: anytype) !void {
     var newTcb = try tcbPool.create();
     const stack = try gpa.allocator().alignedAlloc(u8, .@"8", TASK_STACK_SIZE);
+    if (DEBUG_SCHEDULER) {
+        var writer = imx.lpuart.lpuart1.writer();
+        try writer.print("new tcb @ {*}. new stack @ {*}\n", .{ newTcb, stack.ptr });
+    }
     newTcb.* = .{
         .returnState = .{
             .R7 = @intFromPtr(&stack.ptr[stack.len]),
@@ -190,6 +205,7 @@ pub fn createTask(entry: anytype) !void {
             .excReturn = 0xFFFFFFFD, // Thread mode with PSP stack
         },
         .stack = stack,
+        .name = name,
     };
 
     var newStack = @as(*InterruptStackFrame, @ptrFromInt(newTcb.returnState.SP));
@@ -206,8 +222,31 @@ fn idleTask() void {
     }
 }
 
-pub fn go() !noreturn {
-    try createTask(idleTask);
+pub fn go(initTask: anytype) !void {
+    const kernelHeapBase = @intFromPtr(@extern(?*usize, .{ .name = "__dtcm_heap_begin" }).?);
+    const kernelHeapSize = @intFromPtr(@extern(?*usize, .{ .name = "__dtcm_heap_size" }).?);
+
+    gpaBacking = std.heap.FixedBufferAllocator.init(@as([*]u8, @ptrFromInt(kernelHeapBase))[0..kernelHeapSize]);
+    gpa = .{ .backing_allocator = gpaBacking.allocator() };
+
+    tcbPool = std.heap.MemoryPool(TaskControlBlock).init(gpa.allocator());
+
+    // Set up low power mode to allow SysTick to keep on keeping on, so WFI doesn't block it!
+    imx.clockControlModule.ccm.lowPowerControl.mode = .runMode;
+
+    const systickFrequency = 100000; // imxrt1064 manual says external clock source for systick is 100khz
+    const wantedSystickInterruptFrequency = 100;
+    imx.systick.reloadValue.valueToLoadWhenZeroReached = systickFrequency / wantedSystickInterruptFrequency;
+    imx.systick.currentValue.* = systickFrequency / wantedSystickInterruptFrequency;
+    imx.systick.controlAndStatus.* = .{
+        .enabled = true,
+        .triggerExceptionOnCountToZero = true,
+        .clockSource = .externalClock,
+        .hasCountedToZeroSinceLastRead = false,
+    };
+
+    try createTask("Idle", idleTask);
+    try createTask("Init", initTask);
     // SVC handler will set things up for us on its initial entry.
     Syscall.sleep(0);
     unreachable;

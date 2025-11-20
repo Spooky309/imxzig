@@ -5,13 +5,13 @@ const Error = error{
     CommandNameAlreadyUsed,
 };
 
-const Command = *const fn (args: []const []const u8) void;
+const CommandFunc = fn (args: []const []const u8) void;
 
 // 128b buffer for registering commands. You can just make this bigger if needed.
 //  Maybe if we have a real allocator later on, we can
 var registeredCommandsBuffer: [128]u8 = undefined;
 var registeredCommandsAllocator = std.heap.FixedBufferAllocator.init(&registeredCommandsBuffer);
-var registeredCommands = std.StringHashMap(Command).init(registeredCommandsAllocator.allocator());
+var registeredCommands = std.StringHashMap(*const CommandFunc).init(registeredCommandsAllocator.allocator());
 
 var terminalBuffer: [256]u8 = undefined;
 var terminalBufferTop: u32 = 0;
@@ -53,13 +53,20 @@ fn receiveChars() !void {
     }
 }
 
-pub fn registerCommand(comptime name: []const u8, cmd: Command) !void {
+pub fn registerCommand(comptime name: []const u8, comptime cmd: CommandFunc) !void {
     var g = try registeredCommands.getOrPut(name);
     if (g.found_existing) return error.CommandNameAlreadyUsed;
-    g.value_ptr.* = cmd;
+    g.value_ptr.* = &cmd;
+}
+
+fn helpCommand(_: []const []const u8) void {
+    var writer = imx.lpuart.lpuart1.writer();
+    writer.print("There is no help yet.\n", .{}) catch {};
 }
 
 pub fn task() !void {
+    try registerCommand("help", helpCommand);
+
     putCommandPrompt();
     while (true) {
         try receiveChars();

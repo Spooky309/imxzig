@@ -125,13 +125,8 @@ fn initUART1() !void {
     try imx.lpuart.lpuart1.init(.{ .srcClockHz = uartSrcClock, .baudRateBitsPerSecond = 460800 });
 }
 
-fn cmdFuncHelp(_: []const []const u8) void {
-    var writer = imx.lpuart.lpuart1.writer();
-    _ = writer.write("There is no help.\n") catch {};
-}
-
-fn cmdFuncCrash(_: []const []const u8) void {
-    std.debug.panic("You asked for it!", .{});
+fn init() !void {
+    try kernel.createTask("Terminal", terminal.task);
 }
 
 fn main() !void {
@@ -163,27 +158,7 @@ fn main() !void {
     imx.gpio.gpio2.pinWrite(bluePin, false);
     imx.gpio.gpio2.pinWrite(greenPin, false);
 
-    try terminal.registerCommand("help", cmdFuncHelp);
-    try terminal.registerCommand("crash", cmdFuncCrash);
-
-    try kernel.init();
-
-    try kernel.createTask(terminal.task);
-
-    // Set up low power mode to allow SysTick to keep on keeping on, so WFI doesn't block it!
-    imx.clockControlModule.ccm.lowPowerControl.mode = .runMode;
-
-    const systickFrequency = 100000; // imxrt1064 manual says external clock source for systick is 100khz
-    const wantedSystickInterruptFrequency = 100;
-    imx.systick.reloadValue.valueToLoadWhenZeroReached = systickFrequency / wantedSystickInterruptFrequency;
-    imx.systick.currentValue.* = systickFrequency / wantedSystickInterruptFrequency;
-    imx.systick.controlAndStatus.* = .{
-        .enabled = true,
-        .triggerExceptionOnCountToZero = true,
-        .clockSource = .externalClock,
-        .hasCountedToZeroSinceLastRead = false,
-    };
-    try kernel.go();
+    try kernel.go(init);
 
     unreachable;
 }
