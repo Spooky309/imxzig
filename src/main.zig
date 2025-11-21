@@ -106,26 +106,14 @@ fn initLED() void {
     imx.panic.blueLEDPin = bluePin;
 }
 
-noinline fn setupClocks() linksection(".itcm_text") void {
-    // Set up the serial clock to use pll3/6 with a denominator of zero.
-    imx.clockControlModule.ccm.serialClockDivider1.uartClockSelector = .pll3Div6;
-    imx.clockControlModule.ccm.serialClockDivider1.dividerForUartClockPodfMinusOne = 0;
-}
-
-fn initUART1() !void {}
-
 fn init() !void {
-    try initUART1();
-
-    var writer = imx.lpuart.lpuart1.writer();
-
-    try writer.print(&.{0x0C}, .{});
-    try writer.print(
+    _ = kernel.syscall.write(0,
+        \\
         \\----------------------------------
         \\IMXZIG
         \\----------------------------------
         \\
-    , .{});
+    );
 
     kernel.syscall.createTask("Terminal", terminal.task);
 }

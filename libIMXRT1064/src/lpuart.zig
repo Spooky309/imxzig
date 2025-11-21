@@ -339,6 +339,8 @@ fn LPUART(
             return std.Io.Reader{
                 .buffer = &.{},
                 .vtable = &readerVtable,
+                .seek = 0,
+                .end = 0,
             };
         }
         pub fn writer() std.Io.Writer {
@@ -379,13 +381,16 @@ fn LPUART(
         fn readerStream(_: *std.Io.Reader, w: *std.Io.Writer, limit: std.Io.Limit) std.Io.Reader.StreamError!usize {
             var l: ?std.Io.Limit = limit;
             while (l) |lim| {
-                if (readChar()) |c| {
-                    w.write(&.{c});
+                if (readChar(false)) |c| {
+                    _ = w.write(&.{c}) catch {
+                        return std.Io.Reader.StreamError.WriteFailed;
+                    };
                 } else {
                     return limit.subtract(lim.toInt().?).?.toInt().?;
                 }
                 l = lim.subtract(1);
             }
+            return limit.toInt().?;
         }
 
         const writerVtable: std.Io.Writer.VTable = .{

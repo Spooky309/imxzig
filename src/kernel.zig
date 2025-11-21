@@ -13,11 +13,9 @@ pub fn go(initTask: anytype) !noreturn {
     asm volatile ("CPSID i");
 
     try heap.init();
-    try tasks.init();
     interrupt.init();
 
     // Run modules init functions here so they can register IRQs/hooks!
-
     // Comptime iteration of decls in modules.zig - gives us the imports (they are structs)
     inline for (@typeInfo(modules).@"struct".decls) |decl| {
         // Grab the module decl
@@ -30,6 +28,7 @@ pub fn go(initTask: anytype) !noreturn {
         }
     }
 
+    try tasks.init();
     try tasks.create("Init", tasks.makeTaskEntryPoint(initTask));
     syscall.sleep(0xFFFFFFFF);
     unreachable;
