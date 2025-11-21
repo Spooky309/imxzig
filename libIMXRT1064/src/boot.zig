@@ -129,9 +129,6 @@ const ImageVectorTable = extern struct {
         size: u16,
         version: Version,
     };
-    // Cortex-M7 doc says the IVT must be aligned to the number of supported interrupts times 4, rounded up to a power of two.
-    //  Really what that means, is the size of the interrupt table rounded up to PoT
-    pub const ivtAlign = std.math.ceilPowerOfTwoAssert(u32, @sizeOf(interrupt.VectorTable));
 
     // Fields
     header: Header = .{
@@ -140,7 +137,7 @@ const ImageVectorTable = extern struct {
         .version = .{ .major = 4, .minor = 1 },
     },
 
-    ivtAddress: *align(ivtAlign) const interrupt.VectorTable,
+    ivtAddress: *align(interrupt.VectorTable.alignment) const interrupt.VectorTable,
     _pad0: u32 = 0,
 
     dcdAddress: u32 = 0,
@@ -267,8 +264,7 @@ fn makeResetISR(comptime mainFn: anytype) *const fn () callconv(.naked) void {
             const bootHeader: *const BootHeader = @ptrFromInt(compconfig.imageBase);
 
             // Set VTOR pointer to our IVT
-            const VTOR: **align(ImageVectorTable.ivtAlign) const interrupt.VectorTable = @ptrFromInt(0xE000ED08);
-            VTOR.* = bootHeader.imageVectorTable.ivtAddress;
+            interrupt.VTOR.* = bootHeader.imageVectorTable.ivtAddress;
 
             // Enable the FPU
             coprocessor.coprocessorAccessControlRegister.ctrl = .fullAccess;
@@ -318,7 +314,7 @@ fn fixupIVTEntryPointIfNecessary(comptime config: anytype) interrupt.VectorTable
 }
 
 pub fn generateHeader(comptime config: anytype) void {
-    const ivt: interrupt.VectorTable align(ImageVectorTable.ivtAlign) = fixupIVTEntryPointIfNecessary(config.bootConfig);
+    const ivt: interrupt.VectorTable align(interrupt.VectorTable.alignment) = fixupIVTEntryPointIfNecessary(config.bootConfig);
 
     // Create the boot header.
     const bootHeader: BootHeader = .{

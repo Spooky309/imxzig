@@ -14,6 +14,18 @@ pub const ReturnState = extern struct {
     R11: usize = 0,
 };
 
+// with no FPU!
+pub const StandardStackFrame = extern struct {
+    R0: usize = 0,
+    R1: usize = 0,
+    R2: usize = 0,
+    R3: usize = 0,
+    R12: usize = 0,
+    LR: usize = 0xDEADBEEF,
+    PC: usize = 0,
+    XPSR: usize = 0x01000000,
+};
+
 pub const InterruptHandler = ?*const fn () callconv(.naked) void;
 
 pub fn makeISR(comptime func: anytype) *const fn () callconv(.naked) void {
@@ -43,7 +55,7 @@ pub fn makeISR(comptime func: anytype) *const fn () callconv(.naked) void {
                     \\
                     \\BL %[theHandler]
                     \\
-                    \\ADD SP, #40
+                    \\ADD SP, #24
                     \\POP {PC}
                     :
                     : [theHandler] "X" (func),
@@ -94,6 +106,8 @@ pub fn makeIVT(comptime overrides: VectorTable) VectorTable {
 
 // This can be split up, the first part of the VectorTable should be in M7.
 pub const VectorTable = extern struct {
+    pub const alignment = std.math.ceilPowerOfTwoAssert(u32, @sizeOf(VectorTable));
+
     // CM7 defined
     initialStackTop: u32 = compconfig.ocmBase + compconfig.ocmSize, // Put stack at top of OCM, we will move it after we configure DTCM
     reset: InterruptHandler = null,
@@ -272,3 +286,5 @@ pub const VectorTable = extern struct {
     FLEXIO3: InterruptHandler = null,
     GPIO6_7_8_9: InterruptHandler = null,
 };
+
+pub const VTOR: **align(VectorTable.alignment) const VectorTable = @ptrFromInt(0xE000ED08);
