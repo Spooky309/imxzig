@@ -1,5 +1,6 @@
-const imx = @import("libIMXRT1064");
 const std = @import("std");
+
+const syscall = @import("kernel.zig").syscall;
 
 const Error = error{
     CommandNameAlreadyUsed,
@@ -18,39 +19,41 @@ var terminalBufferTop: u32 = 0;
 var lastCharReceived: u8 = 0;
 
 fn putCommandPrompt() void {
-    _ = imx.lpuart.lpuart1.writeChar(true, '>');
-    _ = imx.lpuart.lpuart1.writeChar(true, ' ');
+    _ = syscall.write(0, "> ");
 }
 
 fn doCommand() !void {
     const cmd = terminalBuffer[0..terminalBufferTop];
-    var writer = imx.lpuart.lpuart1.writer();
-    _ = imx.lpuart.lpuart1.writeChar(true, '\n');
-    _ = try writer.write(cmd);
-    _ = imx.lpuart.lpuart1.writeChar(true, '\n');
+    _ = syscall.write(0, "\n");
+    _ = syscall.write(0, cmd);
+    _ = syscall.write(0, "\n");
     if (registeredCommands.get(cmd)) |c| {
         c(&.{});
     } else {
-        _ = try writer.write("Unrecognized command\n");
+        _ = syscall.write(0, "Unrecognized command\n");
     }
     putCommandPrompt();
     terminalBufferTop = 0;
 }
 
 fn receiveChars() !void {
-    while (imx.lpuart.lpuart1.readChar(false)) |c| {
-        if (c == '\r' or (c == '\n' and lastCharReceived != '\r')) {
-            try doCommand();
-        } else if (c != '\n') {
-            if (terminalBufferTop < terminalBuffer.len) {
-                terminalBuffer[terminalBufferTop] = c;
-                terminalBufferTop += 1;
-                // echo it back to them
-                _ = imx.lpuart.lpuart1.writeChar(true, c);
-            }
+    var b: [1]u8 = .{0};
+
+    _ = syscall.read(0, &b);
+
+    const c = b[0];
+
+    if (c == '\r' or (c == '\n' and lastCharReceived != '\r')) {
+        try doCommand();
+    } else if (c != '\n') {
+        if (terminalBufferTop < terminalBuffer.len) {
+            terminalBuffer[terminalBufferTop] = c;
+            terminalBufferTop += 1;
+            // echo it back to them
+            _ = syscall.write(0, &b);
         }
-        lastCharReceived = c;
     }
+    lastCharReceived = c;
 }
 
 pub fn registerCommand(comptime name: []const u8, comptime cmd: CommandFunc) !void {
@@ -60,8 +63,7 @@ pub fn registerCommand(comptime name: []const u8, comptime cmd: CommandFunc) !vo
 }
 
 fn helpCommand(_: []const []const u8) void {
-    var writer = imx.lpuart.lpuart1.writer();
-    writer.print("There is no help yet.\n", .{}) catch {};
+    _ = syscall.write(0, "There is no help yet.\n");
 }
 
 pub fn task() !void {

@@ -106,44 +106,19 @@ fn initLED() void {
     imx.panic.blueLEDPin = bluePin;
 }
 
-noinline fn setupClocks() linksection(".itcm_text") void {
-    // Enable iomuxc clock
-    imx.clockControlModule.ccm.gating4.iomuxc = .onWhileInRunOrWaitMode;
-    // Set up the serial clock to use pll3/6 with a denominator of zero.
-    imx.clockControlModule.ccm.serialClockDivider1.uartClockSelector = .pll3Div6;
-    imx.clockControlModule.ccm.serialClockDivider1.dividerForUartClockPodfMinusOne = 0;
-}
-
-fn initUART1() !void {
-    const uartSrcClock: u32 = if (imx.clockControlModule.ccm.serialClockDivider1.uartClockSelector == .pll3Div6)
-        (imx.clockControlModule.ccmAnalog.usb1_480mhzPll.data.get() / 6) / (imx.clockControlModule.ccm.serialClockDivider1.dividerForUartClockPodfMinusOne + 1)
-    else
-        imx.clockControlModule.xtalOscillator.getClockHz() / (imx.clockControlModule.ccm.serialClockDivider1.dividerForUartClockPodfMinusOne + 1);
-
-    try imx.lpuart.lpuart1.init(.{ .srcClockHz = uartSrcClock, .baudRateBitsPerSecond = 460800 });
-}
-
 fn init() !void {
-    try initUART1();
-
-    var writer = imx.lpuart.lpuart1.writer();
-
-    try writer.print(&.{0x0C}, .{});
-    try writer.print(
+    _ = kernel.syscall.write(0,
+        \\
         \\----------------------------------
         \\IMXZIG
         \\----------------------------------
         \\
-    , .{});
+    );
 
     kernel.syscall.createTask("Terminal", terminal.task);
 }
 
 fn main() !void {
-    // This function should be in ITCM, because it might mess with the QSPI clock temporarily.
-    //  TODO: Really, each kernel module should set up its own clocks. But we don't have modules yet...
-    setupClocks();
-
     // initLED();
     // Turn on some LEDs to let us know we're loading
     // imx.gpio.gpio2.pinWrite(redPin, true);

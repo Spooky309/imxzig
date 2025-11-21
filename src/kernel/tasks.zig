@@ -5,11 +5,36 @@ const heap = @import("heap.zig");
 const interrupt = @import("interrupt.zig");
 const syscall = @import("syscall.zig");
 
+const Pipe = @import("pipe.zig");
+
+const Operation = struct {
+    const Kind = enum {
+        none,
+        read,
+        write,
+    };
+
+    op: union(Kind) {
+        none: void,
+        read: struct {
+            pipe: Pipe,
+            streamWriter: std.Io.Writer,
+        },
+        write: struct {
+            pipe: Pipe,
+            dataLeft: []const u8,
+        },
+    },
+};
+
 const TaskControlBlock = struct {
     name: []const u8,
     node: std.DoublyLinkedList.Node = .{},
     returnState: imx.interrupt.ReturnState = .{},
     stack: []u8 = &.{},
+    stdio: ?Pipe = null,
+
+    waitingOperation: Operation = .{ .op = .none },
 };
 
 pub const TaskEntryPoint = *const fn () callconv(.c) void;
@@ -17,7 +42,10 @@ pub const TaskEntryPoint = *const fn () callconv(.c) void;
 const SCHEDULER_FREQUENCY_HZ = 100;
 const TASK_STACK_SIZE = 8192;
 var tcbPool: std.heap.MemoryPool(TaskControlBlock) = undefined;
-var activeTcbs = std.DoublyLinkedList{};
+
+pub var activeTcbs = std.DoublyLinkedList{};
+pub var waitingTcbs = std.DoublyLinkedList{};
+
 pub var currentTcb: *TaskControlBlock = undefined;
 
 pub fn makeTaskEntryPoint(e: anytype) TaskEntryPoint {
@@ -55,6 +83,40 @@ pub fn makeTaskEntryPoint(e: anytype) TaskEntryPoint {
 pub fn scheduler() noreturn {
     @setRuntimeSafety(false);
 
+    // First, handle the wait conditions on any waiting TCBs
+    var waiter = waitingTcbs.first;
+    while (waiter) |w| {
+        var waitingTcb: *TaskControlBlock = @fieldParentPtr("node", w);
+        var stopWaiting = false;
+        switch (waitingTcb.waitingOperation.op) {
+            .none => {
+                stopWaiting = true;
+            },
+            .read => |*rop| {
+                _ = rop.pipe.reader.stream(&rop.streamWriter, .limited(rop.streamWriter.buffer.len - rop.streamWriter.end)) catch {}; // Do something!
+                if (rop.streamWriter.end == rop.streamWriter.buffer.len) {
+                    stopWaiting = true;
+                }
+            },
+            .write => |*wop| {
+                const amtWritten = wop.pipe.writer.write(wop.dataLeft) catch 0; // Do something!
+                wop.dataLeft = wop.dataLeft[amtWritten..][0 .. wop.dataLeft.len - amtWritten];
+                if (wop.dataLeft.len == 0) {
+                    stopWaiting = true;
+                }
+            },
+        }
+
+        const newWaiter = w.next;
+
+        if (stopWaiting) {
+            waitingTcbs.remove(w);
+            activeTcbs.append(w);
+        }
+
+        waiter = newWaiter;
+    }
+
     // Very simple round-robin.
     const tcb: *TaskControlBlock = @fieldParentPtr("node", activeTcbs.popFirst().?);
     currentTcb = tcb;
@@ -90,6 +152,7 @@ pub fn create(name: []const u8, entry: TaskEntryPoint) !void {
         },
         .stack = stack,
         .name = name,
+        .stdio = Pipe.getGlobalPipe("LPUART1"),
     };
 
     var newStack = @as(*imx.interrupt.StandardStackFrame, @ptrFromInt(newTcb.returnState.SP));
