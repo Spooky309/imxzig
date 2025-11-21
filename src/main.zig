@@ -61,11 +61,7 @@ comptime {
                 .isUniformBlockSize = false,
             },
             .mainFn = main,
-            .interruptVectorTable = imx.interrupt.makeIVT(.{
-                // Override interrupt vectors here!
-                .sysTick = imx.interrupt.makeISR(&kernel.systickHandler),
-                .svc = imx.interrupt.makeISR(&kernel.svcHandler),
-            }),
+            .interruptVectorTable = imx.interrupt.makeIVT(.{}),
         },
     });
 }
@@ -111,6 +107,8 @@ fn initLED() void {
 }
 
 noinline fn setupClocks() linksection(".itcm_text") void {
+    // Enable iomuxc clock
+    imx.clockControlModule.ccm.gating4.iomuxc = .onWhileInRunOrWaitMode;
     // Set up the serial clock to use pll3/6 with a denominator of zero.
     imx.clockControlModule.ccm.serialClockDivider1.uartClockSelector = .pll3Div6;
     imx.clockControlModule.ccm.serialClockDivider1.dividerForUartClockPodfMinusOne = 0;
@@ -126,21 +124,6 @@ fn initUART1() !void {
 }
 
 fn init() !void {
-    try kernel.createTask("Terminal", terminal.task);
-}
-
-fn main() !void {
-    // Enable iomuxc clock
-    imx.clockControlModule.ccm.gating4.iomuxc = .onWhileInRunOrWaitMode;
-    // This function should be in ITCM, because it might mess with the QSPI clock temporarily.
-    setupClocks();
-
-    initLED();
-    // Turn on some LEDs to let us know we're loading
-    imx.gpio.gpio2.pinWrite(redPin, true);
-    imx.gpio.gpio2.pinWrite(greenPin, true);
-    imx.gpio.gpio2.pinWrite(bluePin, true);
-
     try initUART1();
 
     var writer = imx.lpuart.lpuart1.writer();
@@ -153,12 +136,24 @@ fn main() !void {
         \\
     , .{});
 
+    kernel.syscall.createTask("Terminal", terminal.task);
+}
+
+fn main() !void {
+    // This function should be in ITCM, because it might mess with the QSPI clock temporarily.
+    //  TODO: Really, each kernel module should set up its own clocks. But we don't have modules yet...
+    setupClocks();
+
+    // initLED();
+    // Turn on some LEDs to let us know we're loading
+    // imx.gpio.gpio2.pinWrite(redPin, true);
+    // imx.gpio.gpio2.pinWrite(greenPin, true);
+    // imx.gpio.gpio2.pinWrite(bluePin, true);
+
     // Turn off the LEDs
-    imx.gpio.gpio2.pinWrite(redPin, false);
-    imx.gpio.gpio2.pinWrite(bluePin, false);
-    imx.gpio.gpio2.pinWrite(greenPin, false);
+    // imx.gpio.gpio2.pinWrite(redPin, false);
+    // imx.gpio.gpio2.pinWrite(bluePin, false);
+    // imx.gpio.gpio2.pinWrite(greenPin, false);
 
     try kernel.go(init);
-
-    unreachable;
 }

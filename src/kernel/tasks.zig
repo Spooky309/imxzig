@@ -1,0 +1,139 @@
+const std = @import("std");
+const imx = @import("libIMXRT1064");
+
+const heap = @import("heap.zig");
+const interrupt = @import("interrupt.zig");
+const syscall = @import("syscall.zig");
+
+const TaskControlBlock = struct {
+    name: []const u8,
+    node: std.DoublyLinkedList.Node = .{},
+    returnState: imx.interrupt.ReturnState = .{},
+    stack: []u8 = &.{},
+};
+
+pub const TaskEntryPoint = *const fn () callconv(.c) void;
+
+const SCHEDULER_FREQUENCY_HZ = 100;
+const TASK_STACK_SIZE = 8192;
+var tcbPool: std.heap.MemoryPool(TaskControlBlock) = undefined;
+var activeTcbs = std.DoublyLinkedList{};
+pub var currentTcb: *TaskControlBlock = undefined;
+
+pub fn makeTaskEntryPoint(e: anytype) TaskEntryPoint {
+    return struct {
+        const entryInfo = @typeInfo(@TypeOf(e)).@"fn";
+
+        // Should we allow functions passed in here to
+        pub fn entry() callconv(.c) void {
+            asm volatile ("CPSIE i");
+            if (entryInfo.params.len != 0) {
+                @compileError("createTask doesn't support arguments... yet.");
+            }
+            switch (@typeInfo(entryInfo.return_type.?)) {
+                .error_union => |t| {
+                    if (t.payload != void) {
+                        @compileError("Function passed into createTask should return void, or an error union with void.");
+                    }
+                    e() catch {
+                        // Print error?
+                    };
+                },
+                .void => {
+                    e();
+                },
+                else => {
+                    @compileError("Function passed into createTask should return void, or an error union with void.");
+                },
+            }
+            syscall.terminateTask();
+        }
+    }.entry;
+}
+
+// This should only be called from ISRs when we want to switch tasks!!!
+pub fn scheduler() noreturn {
+    @setRuntimeSafety(false);
+
+    // Very simple round-robin.
+    const tcb: *TaskControlBlock = @fieldParentPtr("node", activeTcbs.popFirst().?);
+    currentTcb = tcb;
+    activeTcbs.append(&tcb.node);
+
+    // We want to reset MSP to the top of the supervisor stack, otherwise, it never gets changed and every time
+    //  this function gets called it climbs a bit lower, until it starts corrupting the heap.
+    const superStack = @intFromPtr(@extern(?*usize, .{ .name = "__supervisor_stack_top" }).?);
+    asm volatile (
+        \\LDM %[regs], {r4-r11}
+        \\MSR PSP, %[sp]
+        \\MOV LR, %[excReturn]
+        \\MOV SP, %[kStackTop]
+        \\BX LR
+        :
+        : [regs] "r" (&tcb.returnState.R4),
+          [sp] "r" (tcb.returnState.SP),
+          [excReturn] "r" (tcb.returnState.excReturn),
+          [kStackTop] "r" (superStack),
+    );
+
+    unreachable;
+}
+
+pub fn create(name: []const u8, entry: TaskEntryPoint) !void {
+    var newTcb = try tcbPool.create();
+    const stack = try heap.allocator().alignedAlloc(u8, .@"8", TASK_STACK_SIZE);
+    newTcb.* = .{
+        .returnState = .{
+            .R7 = @intFromPtr(&stack.ptr[stack.len]),
+            .SP = @intFromPtr(&stack.ptr[stack.len - @sizeOf(imx.interrupt.StandardStackFrame)]),
+            .excReturn = 0xFFFFFFFD, // Thread mode with PSP stack
+        },
+        .stack = stack,
+        .name = name,
+    };
+
+    var newStack = @as(*imx.interrupt.StandardStackFrame, @ptrFromInt(newTcb.returnState.SP));
+
+    newStack.* = .{};
+    newStack.PC = @intFromPtr(entry);
+
+    activeTcbs.append(&newTcb.node);
+}
+
+// If input is currentTcb, it will set currentTcb to the first thing in the list
+pub fn destroy(tcb: *TaskControlBlock) void {
+    activeTcbs.remove(&tcb.node);
+    heap.allocator().free(tcb.stack);
+    tcbPool.destroy(tcb);
+    if (currentTcb == tcb) {
+        // Initialize currentTcb to a reasonable value, so any further operations using currentTcb aren't using stale data.
+        currentTcb = @fieldParentPtr("node", activeTcbs.first.?);
+    }
+}
+
+fn idleTask() void {
+    while (true) {
+        asm volatile ("WFI");
+    }
+}
+
+pub fn init() !void {
+    // Set up SysTick to our wanted frequency.
+    imx.clockControlModule.ccm.lowPowerControl.mode = .runMode;
+    const systickFrequency = 100000; // imxrt1064 manual says external clock source for systick is 100khz
+    const wantedSystickInterruptFrequency = SCHEDULER_FREQUENCY_HZ;
+    imx.systick.reloadValue.valueToLoadWhenZeroReached = systickFrequency / wantedSystickInterruptFrequency;
+    imx.systick.currentValue.* = systickFrequency / wantedSystickInterruptFrequency;
+    imx.systick.controlAndStatus.* = .{
+        .enabled = true,
+        .triggerExceptionOnCountToZero = true,
+        .clockSource = .externalClock,
+        .hasCountedToZeroSinceLastRead = false,
+    };
+
+    tcbPool = std.heap.MemoryPool(TaskControlBlock).init(heap.allocator());
+
+    try create("Idle", makeTaskEntryPoint(idleTask));
+
+    currentTcb = @fieldParentPtr("node", activeTcbs.first.?);
+}
