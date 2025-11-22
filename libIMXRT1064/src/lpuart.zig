@@ -2,16 +2,10 @@ const std = @import("std");
 const iomuxc = @import("iomuxc.zig");
 const clockControlModule = @import("clockControlModule.zig");
 
-const FIFOSize = enum(u3) {
-    @"1" = 0,
-    @"4" = 1,
-    @"8" = 2,
-    @"16" = 3,
-    @"32" = 4,
-    @"64" = 5,
-    @"128" = 6,
-    @"256" = 7,
-};
+fn getFIFOSizeFromRegisterValue(val: u5) usize {
+    if (val == 0) return 1;
+    return (@as(usize, 1) << (val + 1));
+}
 
 const LPUARTRegister = extern struct {
     versionID: packed struct(u32) {
@@ -173,9 +167,9 @@ const LPUARTRegister = extern struct {
         _pad2: u13 = 0,
     },
     fifo: packed struct(u32) {
-        rxFifoSizeInWords: FIFOSize,
+        rxFifoSizeInWordsLog2: u3,
         rxFifoEnable: bool,
-        txFifoSizeInWords: FIFOSize,
+        txFifoSizeInWordsLog2: u3,
         txFifoEnable: bool,
         rxFifoUnderflowInterruptEnable: bool,
         txFifoOverflowInterruptEnable: bool,
@@ -208,8 +202,8 @@ const Config = struct {
     dataBitsCount: enum { @"8", @"7" } = .@"8",
     msbFirst: bool = false,
     stopBitCount: enum { @"1", @"2" } = .@"1",
-    txFifoWatermarkInWords: u2 = 3,
-    rxFifoWatermarkInWords: u2 = 3,
+    txFifoWatermarkInWords: u2 = 0,
+    rxFifoWatermarkInWords: u2 = 1,
     rxIdleType: enum { onStartBit, onStopBit } = .onStartBit,
     rxNumIdleCharactersLog2: u3 = 0,
     enableTx: bool = true,
@@ -235,20 +229,16 @@ fn LPUART(
             BaudRateNotSupported,
         };
 
-        pub fn setTransmitBufferEmptyInterruptEnabled(on: bool) void {
-            register.control.transmissionBufferEmptyInterruptEnable = on;
+        pub fn setTxDMA(val: bool) void {
+            register.baudRate.transmitterDMAEnable = val;
         }
 
-        pub fn setReceiveBufferFullInterruptEnable(on: bool) void {
-            register.control.receiverBufferFullInterruptEnable = on;
+        pub fn setRxDMA(val: bool) void {
+            register.baudRate.receiverFullDMAEnable = val;
         }
 
-        pub fn transmitBufferEmpty() bool {
-            return register.status.transmitDataRegisterEmptyFlag;
-        }
-
-        pub fn receiveBufferFull() bool {
-            return register.status.receiveDataRegisterFullFlag;
+        pub fn getDataByteAddress() *volatile u8 {
+            return @as(*volatile u8, @ptrCast(&register.data));
         }
 
         pub fn init(config: Config) Error!void {
@@ -306,6 +296,9 @@ fn LPUART(
             baud.moduloDivisor = @truncate(moduloDivisor);
             baud.useTenBitMode = false;
             baud.numStopBits = if (config.stopBitCount == .@"1") .one else .two;
+            baud.transmitterDMAEnable = false;
+            baud.receiverFullDMAEnable = false;
+            baud.receiverIdleDMAEnable = false;
             register.baudRate = baud;
 
             ctrl = register.control;
@@ -317,9 +310,11 @@ fn LPUART(
             ctrl.numIdleCharactersLog2 = config.rxNumIdleCharactersLog2;
             register.control = ctrl;
 
+            const maxRxWatermark = getFIFOSizeFromRegisterValue(register.fifo.rxFifoSizeInWordsLog2) - 1;
+            const maxTxWatermark = getFIFOSizeFromRegisterValue(register.fifo.txFifoSizeInWordsLog2) - 1;
             register.watermark = .{
-                .receiveWatermarkInWords = @max(1, @min(config.rxFifoWatermarkInWords, @intFromEnum(register.fifo.rxFifoSizeInWords))),
-                .transmitWatermarkInWords = @min(config.txFifoWatermarkInWords, @intFromEnum(register.fifo.txFifoSizeInWords)),
+                .receiveWatermarkInWords = @max(1, @min(config.rxFifoWatermarkInWords, maxRxWatermark)),
+                .transmitWatermarkInWords = @min(config.txFifoWatermarkInWords, maxTxWatermark),
             };
 
             var fifo = register.fifo;
@@ -349,8 +344,6 @@ fn LPUART(
             ctrl = register.control;
             ctrl.transmitterEnable = true;
             ctrl.receiverEnable = true;
-            ctrl.transmissionBufferEmptyInterruptEnable = false;
-            ctrl.receiverBufferFullInterruptEnable = false;
             register.control = ctrl;
         }
         pub fn reader() std.Io.Reader {
@@ -391,31 +384,6 @@ fn LPUART(
                 return null;
             }
             return @truncate(register.data.readOrWriteBuffer);
-        }
-
-        // returns number of bytes written
-        pub fn writeOut(data: []const u8) usize {
-            for (data, 0..) |c, i| {
-                // With FIFO enabled, the TDRE flag tells us if the number of words in the FIFO is less than or equal to the watermark.
-                if (register.status.transmitDataRegisterEmptyFlag) {
-                    register.data.readOrWriteBuffer = @intCast(c);
-                } else {
-                    return i;
-                }
-            }
-            return data.len;
-        }
-
-        // returns number of bytes read
-        pub fn readIn(data: []u8) usize {
-            for (data, 0..) |*c, i| {
-                if (register.status.receiveDataRegisterFullFlag) {
-                    c.* = @truncate(register.data.readOrWriteBuffer);
-                } else {
-                    return i;
-                }
-            }
-            return data.len;
         }
 
         const readerVtable: std.Io.Reader.VTable = .{
