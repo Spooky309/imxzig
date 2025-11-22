@@ -173,7 +173,7 @@ const LPUARTRegister = extern struct {
         txFifoEnable: bool,
         rxFifoUnderflowInterruptEnable: bool,
         txFifoOverflowInterruptEnable: bool,
-        receiverIdleEmptyEnableAndIfSoHowManyCharactersToWaitForLog2PlusOne: u3,
+        setReceiverFullAfterIdleWithNonEmptyFifoAndIfSoHowManyCharactersToWaitForLog2PlusOne: u3,
         _pad0: u1,
         rxFifoFlush: bool,
         txFifoFlush: bool,
@@ -202,7 +202,7 @@ const Config = struct {
     dataBitsCount: enum { @"8", @"7" } = .@"8",
     msbFirst: bool = false,
     stopBitCount: enum { @"1", @"2" } = .@"1",
-    txFifoWatermarkInWords: u2 = 0,
+    txFifoWatermarkInWords: u2 = 3,
     rxFifoWatermarkInWords: u2 = 1,
     rxIdleType: enum { onStartBit, onStopBit } = .onStartBit,
     rxNumIdleCharactersLog2: u3 = 0,
@@ -229,12 +229,26 @@ fn LPUART(
             BaudRateNotSupported,
         };
 
+        pub fn clearRxOverrun() void {
+            register.status.receiverOverrunFlag = true;
+        }
+
+        pub fn rxBufferIsFull() bool {
+            return register.status.receiveDataRegisterFullFlag;
+        }
+
         pub fn setTxDMA(val: bool) void {
             register.baudRate.transmitterDMAEnable = val;
         }
 
         pub fn setRxDMA(val: bool) void {
             register.baudRate.receiverFullDMAEnable = val;
+        }
+
+        pub fn discardAllRx() void {
+            while (register.status.receiveDataRegisterFullFlag) {
+                _ = register.data;
+            }
         }
 
         pub fn getDataByteAddress() *volatile u8 {
@@ -322,7 +336,7 @@ fn LPUART(
             fifo.txFifoEnable = true;
             fifo.rxFifoFlush = true;
             fifo.txFifoFlush = true;
-            fifo.receiverIdleEmptyEnableAndIfSoHowManyCharactersToWaitForLog2PlusOne = 1;
+            fifo.setReceiverFullAfterIdleWithNonEmptyFifoAndIfSoHowManyCharactersToWaitForLog2PlusOne = 1;
             register.fifo = fifo;
 
             // We aren't doing this yet.

@@ -78,6 +78,7 @@ fn setOp(data: []const u8, kind: OpKind) void {
         .read => {
             imx.dma.enableRequestRegister.* |= (@as(u32, 1) << 16);
             imx.lpuart.lpuart1.setRxDMA(true);
+            imx.lpuart.lpuart1.clearRxOverrun();
         },
         .write => {
             imx.dma.enableRequestRegister.* |= 1;
@@ -88,40 +89,45 @@ fn setOp(data: []const u8, kind: OpKind) void {
 
 fn irqHandler() callconv(.c) void {
     const reqs = imx.dma.interruptRequests.*;
-    imx.dma.interruptRequests.* = 0xFFFFFFFF;
 
     if (imx.dma.edmaErrorStatus.anyError) {
         @panic("edma fail");
     }
 
     if (reqs & 1 != 0) {
-        txChannel.edmaTcd.controlAndStatus.interruptOnMajorCountComplete = false;
-        imx.lpuart.lpuart1.setTxDMA(false);
-        imx.dma.enableRequestRegister.* &= ~@as(u32, 1);
-        asm volatile (
-            \\DSB
-            \\ISB
-        );
-        const tcb = writeOperations.popFront();
-        tcb.?.tcb.prod();
+        imx.dma.clearInterruptRequests.* = 0;
+        if (txChannel.edmaTcd.controlAndStatus.channelDone) {
+            txChannel.edmaTcd.controlAndStatus.interruptOnMajorCountComplete = false;
+            imx.lpuart.lpuart1.setTxDMA(false);
+            imx.dma.enableRequestRegister.* &= ~@as(u32, 1);
+            asm volatile (
+                \\DSB
+                \\ISB
+            );
+            const tcb = writeOperations.popFront();
+            tcb.?.tcb.prod();
 
-        if (writeOperations.front()) |newOp| {
-            setOp(newOp.buf, .write);
+            if (writeOperations.front()) |newOp| {
+                setOp(newOp.buf, .write);
+            }
         }
     }
     if (reqs & (@as(u32, 1) << 16) != 0) {
-        rxChannel.edmaTcd.controlAndStatus.interruptOnMajorCountComplete = false;
-        imx.lpuart.lpuart1.setRxDMA(false);
-        imx.dma.enableRequestRegister.* &= ~(@as(u32, 1) << 16);
-        asm volatile (
-            \\DSB
-            \\ISB
-        );
-        const tcb = readOperations.popFront();
-        tcb.?.tcb.prod();
+        imx.dma.clearInterruptRequests.* = 16;
+        if (rxChannel.edmaTcd.controlAndStatus.channelDone) {
+            rxChannel.edmaTcd.controlAndStatus.interruptOnMajorCountComplete = false;
+            imx.lpuart.lpuart1.setRxDMA(false);
+            imx.dma.enableRequestRegister.* &= ~(@as(u32, 1) << 16);
+            asm volatile (
+                \\DSB
+                \\ISB
+            );
+            const tcb = readOperations.popFront();
+            tcb.?.tcb.prod();
 
-        if (readOperations.front()) |newOp| {
-            setOp(newOp.buf, .read);
+            if (readOperations.front()) |newOp| {
+                setOp(newOp.buf, .read);
+            }
         }
     }
 }

@@ -31,4 +31,4 @@ const irqClearEnableRegister: *volatile [16]u32 = @ptrFromInt(0xE000E180);
 const irqSetPendingRegister: *volatile [16]u32 = @ptrFromInt(0xE000E200);
 const irqClearPendingRegister: *volatile [16]u32 = @ptrFromInt(0xE000E280);
 const irqActiveBitRegister: *volatile [16]u32 = @ptrFromInt(0xE000E300);
-const irqPriorityRegister: *volatile [16]u32 = @ptrFromInt(0xE000E400);
+const irqPriorityRegister: *volatile [124]u32 = @ptrFromInt(0xE000E400);
