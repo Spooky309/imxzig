@@ -130,9 +130,9 @@ const LPUARTRegister = extern struct {
         receiverEnable: bool,
         transmitterEnable: bool,
         idleLineInterruptEnable: bool,
-        receiverInterruptEnable: bool,
+        receiverBufferFullInterruptEnable: bool,
         transmissionCompleteInterruptEnable: bool,
-        transmissionInterruptEnable: bool,
+        transmissionBufferEmptyInterruptEnable: bool,
         parityErrorInterruptEnable: bool,
         framingErrorInterruptEnable: bool,
         noiseErrorInterruptEnable: bool,
@@ -208,7 +208,7 @@ const Config = struct {
     dataBitsCount: enum { @"8", @"7" } = .@"8",
     msbFirst: bool = false,
     stopBitCount: enum { @"1", @"2" } = .@"1",
-    txFifoWatermarkInWords: u2 = 0,
+    txFifoWatermarkInWords: u2 = 3,
     rxFifoWatermarkInWords: u2 = 3,
     rxIdleType: enum { onStartBit, onStopBit } = .onStartBit,
     rxNumIdleCharactersLog2: u3 = 0,
@@ -234,6 +234,22 @@ fn LPUART(
         const Error = error{
             BaudRateNotSupported,
         };
+
+        pub fn setTransmitBufferEmptyInterruptEnabled(on: bool) void {
+            register.control.transmissionBufferEmptyInterruptEnable = on;
+        }
+
+        pub fn setReceiveBufferFullInterruptEnable(on: bool) void {
+            register.control.receiverBufferFullInterruptEnable = on;
+        }
+
+        pub fn transmitBufferEmpty() bool {
+            return register.status.transmitDataRegisterEmptyFlag;
+        }
+
+        pub fn receiveBufferFull() bool {
+            return register.status.receiveDataRegisterFullFlag;
+        }
 
         pub fn init(config: Config) Error!void {
             var baudDiff: u32 = config.baudRateBitsPerSecond;
@@ -302,9 +318,8 @@ fn LPUART(
             register.control = ctrl;
 
             register.watermark = .{
-                // Should check that this is not less than register.fifo.numWords but i cba
-                .receiveWatermarkInWords = config.rxFifoWatermarkInWords,
-                .transmitWatermarkInWords = config.txFifoWatermarkInWords,
+                .receiveWatermarkInWords = @max(1, @min(config.rxFifoWatermarkInWords, @intFromEnum(register.fifo.rxFifoSizeInWords))),
+                .transmitWatermarkInWords = @min(config.txFifoWatermarkInWords, @intFromEnum(register.fifo.txFifoSizeInWords)),
             };
 
             var fifo = register.fifo;
@@ -312,6 +327,7 @@ fn LPUART(
             fifo.txFifoEnable = true;
             fifo.rxFifoFlush = true;
             fifo.txFifoFlush = true;
+            fifo.receiverIdleEmptyEnableAndIfSoHowManyCharactersToWaitForLog2PlusOne = 1;
             register.fifo = fifo;
 
             // We aren't doing this yet.
@@ -333,6 +349,8 @@ fn LPUART(
             ctrl = register.control;
             ctrl.transmitterEnable = true;
             ctrl.receiverEnable = true;
+            ctrl.transmissionBufferEmptyInterruptEnable = false;
+            ctrl.receiverBufferFullInterruptEnable = false;
             register.control = ctrl;
         }
         pub fn reader() std.Io.Reader {
@@ -373,6 +391,31 @@ fn LPUART(
                 return null;
             }
             return @truncate(register.data.readOrWriteBuffer);
+        }
+
+        // returns number of bytes written
+        pub fn writeOut(data: []const u8) usize {
+            for (data, 0..) |c, i| {
+                // With FIFO enabled, the TDRE flag tells us if the number of words in the FIFO is less than or equal to the watermark.
+                if (register.status.transmitDataRegisterEmptyFlag) {
+                    register.data.readOrWriteBuffer = @intCast(c);
+                } else {
+                    return i;
+                }
+            }
+            return data.len;
+        }
+
+        // returns number of bytes read
+        pub fn readIn(data: []u8) usize {
+            for (data, 0..) |*c, i| {
+                if (register.status.receiveDataRegisterFullFlag) {
+                    c.* = @truncate(register.data.readOrWriteBuffer);
+                } else {
+                    return i;
+                }
+            }
+            return data.len;
         }
 
         const readerVtable: std.Io.Reader.VTable = .{

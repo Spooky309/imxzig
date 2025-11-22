@@ -108,6 +108,12 @@ pub fn makeIVT(comptime overrides: VectorTable) VectorTable {
 pub const VectorTable = extern struct {
     pub const alignment = std.math.ceilPowerOfTwoAssert(u32, @sizeOf(VectorTable));
 
+    pub fn getIrqNum(comptime name: []const u8) u32 {
+        const byteOffset = @offsetOf(VectorTable, name);
+        const fieldOffset = byteOffset / 4;
+        return fieldOffset - 16; // IRQ0 is the 16th entry in the table.
+    }
+
     // CM7 defined
     initialStackTop: u32 = compconfig.ocmBase + compconfig.ocmSize, // Put stack at top of OCM, we will move it after we configure DTCM
     reset: InterruptHandler = null,
