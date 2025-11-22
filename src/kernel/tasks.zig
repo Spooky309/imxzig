@@ -2,8 +2,6 @@ const std = @import("std");
 const imx = @import("libIMXRT1064");
 
 const heap = @import("heap.zig");
-const interrupt = @import("interrupt.zig");
-const syscall = @import("syscall.zig");
 
 const Pipe = @import("pipe.zig");
 
@@ -48,6 +46,12 @@ pub var waitingTcbs = std.DoublyLinkedList{};
 
 pub var currentTcb: *TaskControlBlock = undefined;
 
+pub fn systickHandler(irs: imx.interrupt.ReturnState) callconv(.c) void {
+    @setRuntimeSafety(false);
+    currentTcb.returnState = irs;
+    scheduler();
+}
+
 pub fn makeTaskEntryPoint(e: anytype) TaskEntryPoint {
     return struct {
         const entryInfo = @typeInfo(@TypeOf(e)).@"fn";
@@ -74,7 +78,7 @@ pub fn makeTaskEntryPoint(e: anytype) TaskEntryPoint {
                     @compileError("Function passed into createTask should return void, or an error union with void.");
                 },
             }
-            syscall.terminateTask();
+            @import("syscallClient.zig").terminateTask();
         }
     }.entry;
 }
@@ -181,7 +185,7 @@ fn idleTask() void {
 }
 
 pub fn init() !void {
-    // Set up SysTick to our wanted frequency.
+    // Set up SysTick to our wanted scheduler frequency.
     imx.clockControlModule.ccm.lowPowerControl.mode = .runMode;
     const systickFrequency = 100000; // imxrt1064 manual says external clock source for systick is 100khz
     const wantedSystickInterruptFrequency = SCHEDULER_FREQUENCY_HZ;

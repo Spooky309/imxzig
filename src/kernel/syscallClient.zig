@@ -1,5 +1,9 @@
 const tasks = @import("tasks.zig");
 
+// This file is the only file that kernel.zig makes visible to the outside world.
+//  as `kernel.syscall`. Only client-side stuff should be in here.
+// If you're looking for the handler, it's in interrupts.zig
+
 pub const Code = enum(u8) {
     sleep = 0,
     terminateTask = 1,
@@ -58,13 +62,7 @@ pub inline fn read(file: u32, data: []u8) usize {
     return amt;
 }
 
-var schedulerStarted = false;
 pub inline fn sleep(ms: u32) void {
-    if (schedulerStarted and ms == 0xFFFFFFFF) {
-        return;
-    }
-    schedulerStarted = true;
-
     asm volatile ("MOV R4, %[ms]"
         :
         : [ms] "r" (ms),

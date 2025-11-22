@@ -125,9 +125,15 @@ pub const SystemHandlerPriorityRegister = packed struct(u96) {
     _pad4: u8,
 };
 
+pub const InterruptControlTypeRegister = packed struct(u32) {
+    lineCountDiv32MinusOne: u4,
+    _pad0: u28,
+};
+
 pub const configurationAndControlRegister: *volatile ConfigurationAndControlRegister = @ptrFromInt(0xE000ED14);
 pub const cacheLevelIDRegister: *const volatile CacheLevelIDRegister = @ptrFromInt(0xE000ED78); // Value read depends on what's in cacheSizeSelectionRegister!
 pub const cacheTypeRegister: *const volatile CacheTypeRegister = @ptrFromInt(0xE000ED7C); // Value read depends on what's in cacheSizeSelectionRegister!
 pub const cacheSizeIDRegister: *const volatile CacheSizeIDRegister = @ptrFromInt(0xE000ED80); // Value read depends on what's in cacheSizeSelectionRegister!
 pub const cacheSizeSelectionRegister: *volatile CacheSizeSelectionRegister = @ptrFromInt(0xE000ED84);
 pub const systemHandlerPriorityRegister: *volatile SystemHandlerPriorityRegister = @ptrFromInt(0xE000ED18);
+pub const interruptControlTypeRegister: *volatile InterruptControlTypeRegister = @ptrFromInt(0xE000E004);
