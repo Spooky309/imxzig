@@ -36,13 +36,10 @@ pub fn svcHandler(irs: imx.interrupt.ReturnState) callconv(.c) void {
 
             // stdoio
             if (fd == 0) {
-                if (tasks.currentTcb.stdio != null) {
-                    tasks.currentTcb.waitingOperation = .{ .op = .{ .write = .{
-                        .dataLeft = data,
-                        .pipe = tasks.currentTcb.stdio.?,
-                    } } };
-                    tasks.activeTcbs.remove(&tasks.currentTcb.node);
-                    tasks.waitingTcbs.append(&tasks.currentTcb.node);
+                if (tasks.currentTcb.stdio) |stdio| {
+                    tasks.currentTcb.waitForProd();
+                    // Return error code to caller?
+                    stdio.writer(data) catch {};
                     switchTasks = true;
                 }
             }
@@ -52,15 +49,12 @@ pub fn svcHandler(irs: imx.interrupt.ReturnState) callconv(.c) void {
             const data = @as([*]u8, @ptrFromInt(irs.R5))[0..irs.R6];
             tasks.currentTcb.returnState.R4 = 0;
 
-            // stdio
+            // stdoio
             if (fd == 0) {
-                if (tasks.currentTcb.stdio != null) {
-                    tasks.currentTcb.waitingOperation = .{ .op = .{ .read = .{
-                        .streamWriter = std.Io.Writer.fixed(data),
-                        .pipe = tasks.currentTcb.stdio.?,
-                    } } };
-                    tasks.activeTcbs.remove(&tasks.currentTcb.node);
-                    tasks.waitingTcbs.append(&tasks.currentTcb.node);
+                if (tasks.currentTcb.stdio) |stdio| {
+                    tasks.currentTcb.waitForProd();
+                    // Return error code to caller?
+                    stdio.reader(data) catch {};
                     switchTasks = true;
                 }
             }

@@ -19,10 +19,10 @@ fn svcHandlerSetupStub() callconv(.c) void {
     tasks.scheduler();
 }
 
-pub fn registerAndEnableIRQ(comptime name: []const u8, handler: imx.interrupt.InterruptHandler) void {
-    @field(localVectorTable, name) = handler;
-    const num = localVectorTable.getIrqNum(name);
-    imx.nvic.enableIRQ(num);
+pub fn registerAndEnableIRQ(comptime name: []const u8, handler: imx.interrupt.InterruptHandler) !void {
+    @atomicStore(imx.interrupt.InterruptHandler, &@field(localVectorTable, name), handler, .seq_cst);
+    const num = imx.interrupt.VectorTable.getIrqNum(name);
+    try imx.nvic.enableIRQ(num);
 }
 
 pub fn init() void {

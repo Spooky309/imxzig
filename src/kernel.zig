@@ -11,9 +11,10 @@ const modules = @import("kernel/modules.zig");
 
 pub fn go(initTask: anytype) !noreturn {
     asm volatile ("CPSID i");
-
     try heap.init();
 
+    // Init interrupts BEFORE modules!!!
+    interrupt.init();
     // Run modules init functions here so they can register IRQs/hooks!
     // Comptime iteration of decls in modules.zig - gives us the imports (they are structs)
     inline for (@typeInfo(modules).@"struct".decls) |decl| {
@@ -30,7 +31,6 @@ pub fn go(initTask: anytype) !noreturn {
     try tasks.init();
     try tasks.create("Init", tasks.makeTaskEntryPoint(initTask));
 
-    interrupt.init();
     syscall.sleep(0);
     unreachable;
 }

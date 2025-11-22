@@ -8,7 +8,7 @@ pub fn enableIRQ(irqNum: u32) !void {
     if ((irqNum / 32) >= @as(u32, @intCast(systemControlBlock.interruptControlTypeRegister.lineCountDiv32MinusOne + 1))) {
         return error.InvalidIRQNumber;
     }
-    irqSetEnableRegister[irqNum / 32] |= 1 << (irqNum % 32);
+    irqSetEnableRegister[irqNum / 32] |= @as(u32, 1) << @intCast(irqNum % 32);
     asm volatile (
         \\DSB
         \\ISB
@@ -19,7 +19,7 @@ pub fn disableIRQ(irqNum: u32) !void {
     if ((irqNum / 32) >= @as(u32, @intCast(systemControlBlock.interruptControlTypeRegister.lineCountDiv32MinusOne + 1))) {
         return error.InvalidIRQNumber;
     }
-    irqClearEnableRegister[irqNum / 32] |= 1 << (irqNum % 32);
+    irqClearEnableRegister[irqNum / 32] |= @as(u32, 1) << @intCast(irqNum % 32);
     asm volatile (
         \\DSB
         \\ISB

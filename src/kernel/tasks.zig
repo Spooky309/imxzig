@@ -3,36 +3,49 @@ const imx = @import("libIMXRT1064");
 
 const heap = @import("heap.zig");
 
-const Pipe = @import("pipe.zig");
-
-const Operation = struct {
-    const Kind = enum {
-        none,
-        read,
-        write,
-    };
-
-    op: union(Kind) {
-        none: void,
-        read: struct {
-            pipe: Pipe,
-            streamWriter: std.Io.Writer,
-        },
-        write: struct {
-            pipe: Pipe,
-            dataLeft: []const u8,
-        },
-    },
-};
-
-const TaskControlBlock = struct {
+pub const TaskControlBlock = struct {
     name: []const u8,
     node: std.DoublyLinkedList.Node = .{},
     returnState: imx.interrupt.ReturnState = .{},
     stack: []u8 = &.{},
     stdio: ?Pipe = null,
 
-    waitingOperation: Operation = .{ .op = .none },
+    pub fn waitForProd(self: *TaskControlBlock) void {
+        activeTcbs.remove(&self.node);
+        waitingTcbs.remove(&self.node);
+    }
+
+    pub fn prod(self: *TaskControlBlock) void {
+        waitingTcbs.remove(&self.node);
+        activeTcbs.append(&self.node);
+    }
+};
+
+pub const Pipe = struct {
+    const ReadFunc = *const fn (data: []u8) Error!void;
+    const WriteFunc = *const fn (data: []const u8) Error!void;
+
+    name: []const u8,
+    reader: ReadFunc,
+    writer: WriteFunc,
+
+    pub const Error = error{
+        AllocationError,
+    };
+
+    // StringHashMap? Need to figure out the memory usage of it first. This is fine for now.
+    var globalPipes: std.ArrayList(@This()) = .empty;
+
+    pub fn createGlobalPipe(name: []const u8, reader: ReadFunc, writer: WriteFunc) !void {
+        try globalPipes.append(heap.allocator(), .{ .name = name, .reader = reader, .writer = writer });
+    }
+
+    pub fn getGlobalPipe(name: []const u8) ?@This() {
+        for (globalPipes.items) |p| {
+            if (std.mem.eql(u8, p.name, name)) return p;
+        }
+        return null;
+    }
 };
 
 pub const TaskEntryPoint = *const fn () callconv(.c) void;
@@ -86,40 +99,6 @@ pub fn makeTaskEntryPoint(e: anytype) TaskEntryPoint {
 // This should only be called from ISRs when we want to switch tasks!!!
 pub fn scheduler() noreturn {
     @setRuntimeSafety(false);
-
-    // First, handle the wait conditions on any waiting TCBs
-    var waiter = waitingTcbs.first;
-    while (waiter) |w| {
-        var waitingTcb: *TaskControlBlock = @fieldParentPtr("node", w);
-        var stopWaiting = false;
-        switch (waitingTcb.waitingOperation.op) {
-            .none => {
-                stopWaiting = true;
-            },
-            .read => |*rop| {
-                _ = rop.pipe.reader.stream(&rop.streamWriter, .limited(rop.streamWriter.buffer.len - rop.streamWriter.end)) catch {}; // Do something!
-                if (rop.streamWriter.end == rop.streamWriter.buffer.len) {
-                    stopWaiting = true;
-                }
-            },
-            .write => |*wop| {
-                const amtWritten = wop.pipe.writer.write(wop.dataLeft) catch 0; // Do something!
-                wop.dataLeft = wop.dataLeft[amtWritten..][0 .. wop.dataLeft.len - amtWritten];
-                if (wop.dataLeft.len == 0) {
-                    stopWaiting = true;
-                }
-            },
-        }
-
-        const newWaiter = w.next;
-
-        if (stopWaiting) {
-            waitingTcbs.remove(w);
-            activeTcbs.append(w);
-        }
-
-        waiter = newWaiter;
-    }
 
     // Very simple round-robin.
     const tcb: *TaskControlBlock = @fieldParentPtr("node", activeTcbs.popFirst().?);
