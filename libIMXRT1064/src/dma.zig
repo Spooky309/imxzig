@@ -150,5 +150,6 @@ pub const edmaControl: *volatile EDMAControl = @ptrFromInt(0x400E8000);
 pub const edmaErrorStatus: *volatile EDMAErrorStatus = @ptrFromInt(0x400E8004);
 pub const enableErrorInterruptRegister: *volatile u32 = @ptrFromInt(0x400E8014);
 pub const interruptRequests: *volatile u32 = @ptrFromInt(0x400E8024);
+pub const clearInterruptRequests: *volatile u8 = @ptrFromInt(0x400E801F);
 pub const errors: *volatile u32 = @ptrFromInt(0x400E802C);
 pub const enableRequestRegister: *volatile EnableRequestRegister = @ptrFromInt(0x400E800C);
