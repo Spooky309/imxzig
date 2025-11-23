@@ -183,6 +183,7 @@ fn kernelFree(_: *anyopaque, memory: []u8, _: std.mem.Alignment, _: usize) void 
 }
 
 fn kernelRemap(_: *anyopaque, memory: []u8, _: std.mem.Alignment, new_len: usize, _: usize) ?[*]u8 {
+    // This is grossly inefficient -
     if (new_len & ~@as(u32, 4095) != new_len) return null;
     const newMem = allocateMemory(new_len) catch return null;
     @memcpy(newMem, memory);
@@ -190,8 +191,13 @@ fn kernelRemap(_: *anyopaque, memory: []u8, _: std.mem.Alignment, new_len: usize
     return newMem.ptr;
 }
 
-fn kernelResize(_: *anyopaque, _: []u8, _: std.mem.Alignment, _: usize, _: usize) bool {
-    return false;
+fn kernelResize(_: *anyopaque, memory: []u8, _: std.mem.Alignment, new_len: usize, _: usize) bool {
+    const mptr = @intFromPtr(memory.ptr);
+    // If the requested memory block end is in the same 4KiB region as the current end, then no new allocation is needed; we already have the memory.
+    // If not, then we can't resize it, sorry.
+    // A little todo here would be to get a way of requesting the kernel to _see_ if we can allocate right next to here, essentially, pass the
+    //  resize request through to the allocator in the kernel itself.
+    return (((mptr + memory.len) & ~@as(usize, 4095)) == ((mptr + new_len) & ~@as(usize, 4095)));
 }
 
 const kernelAllocatorVTable = std.mem.Allocator.VTable{
@@ -215,8 +221,9 @@ pub const DebugAllocator = std.heap.DebugAllocator(.{
     // May want to adjust - allocations bigger or equal to this size will cause a mapping.
     //  Obviously, if I allocate 4097 bytes, having 8192 bytes dedicated to that allocation is a bit of a waste!
     .page_size = 4096,
+    .enable_memory_limit = true, // I only set this so I can see the memory usage...
 });
 
 pub fn debugAllocator() DebugAllocator {
-    return DebugAllocator{ .backing_allocator = kernelAllocator() };
+    return DebugAllocator{ .backing_allocator = kernelAllocator(), .requested_memory_limit = 0xFFFFFFFF };
 }

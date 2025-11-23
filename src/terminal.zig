@@ -197,6 +197,11 @@ fn testWaitCommand(_: []const []const u8) void {
     writeArrayAsTable(results) catch {};
 }
 
+fn heapUsageCommand(_: []const []const u8) void {
+    stdioWriter.print("{}\n", .{gpa.total_requested_bytes}) catch {};
+    stdioWriter.flush() catch {};
+}
+
 pub fn task() !void {
     stdioWriter = client.stdioWriter();
     stdioWriter.buffer = try gpa.allocator().alloc(u8, 1024);
@@ -209,6 +214,7 @@ pub fn task() !void {
     try registerCommand("testSplat", testSplatCommand);
     try registerCommand("testWait", testWaitCommand);
     try registerCommand("help", helpCommand);
+    try registerCommand("heapUsage", heapUsageCommand);
 
     try putCommandPrompt();
     try stdioWriter.flush();
