@@ -91,7 +91,7 @@ pub fn makeTaskEntryPoint(e: anytype) TaskEntryPoint {
                     @compileError("Function passed into createTask should return void, or an error union with void.");
                 },
             }
-            @import("syscallClient.zig").terminateTask();
+            @import("client.zig").terminateTask();
         }
     }.entry;
 }
