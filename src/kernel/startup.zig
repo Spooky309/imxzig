@@ -33,7 +33,7 @@ pub fn go(initTask: anytype) !noreturn {
     }
 
     try tasks.init();
-    try tasks.create("Init", tasks.makeTaskEntryPoint(initTask));
+    try tasks.create("Init", tasks.makeTaskEntryPoint(initTask), .highest);
 
     client.sleep(0);
     unreachable;

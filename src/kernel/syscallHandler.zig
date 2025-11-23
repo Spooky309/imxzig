@@ -38,7 +38,7 @@ pub fn svcHandler(irs: imx.interrupt.ReturnState) callconv(.c) void {
             const name = @as([*]const u8, @ptrFromInt(irs.R4))[0..irs.R5];
             const entry: tasks.TaskEntryPoint = @ptrFromInt(irs.R6);
             // Return error code to caller?
-            tasks.create(name, entry) catch {};
+            tasks.create(name, entry, null) catch {};
         },
         .write => {
             const fd = irs.R4;
