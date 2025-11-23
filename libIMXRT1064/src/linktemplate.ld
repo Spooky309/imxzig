@@ -113,7 +113,7 @@ SECTIONS
     .ocm_heap : ALIGN(4)
     {
         __ocm_heap_begin = .;
-        __ocm_heap_size = LENGTH(OCM) - .;
+        __ocm_heap_size = LENGTH(OCM) - (. - ORIGIN(OCM));
     } >OCM
 
     .dtcm_heap : ALIGN(4)
