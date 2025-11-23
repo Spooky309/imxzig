@@ -2,6 +2,7 @@ const std = @import("std");
 const imx = @import("libIMXRT1064");
 
 const heap = @import("heap.zig");
+const client = @import("client.zig");
 
 pub const TaskControlBlock = struct {
     name: []const u8,
@@ -77,17 +78,17 @@ pub var waitingTcbs = std.DoublyLinkedList{};
 
 pub var currentTcb: *TaskControlBlock = undefined;
 
-pub fn systickHandler(irs: imx.interrupt.ReturnState) callconv(.c) void {
+pub fn systickHandler(irs: imx.interrupt.ReturnState) callconv(.c) *imx.interrupt.ReturnState {
     @setRuntimeSafety(false);
     currentTcb.returnState = irs;
     scheduler();
+    // Will never actually reach here but we need it for the type system
+    return &currentTcb.returnState;
 }
 
 pub fn makeTaskEntryPoint(e: anytype) TaskEntryPoint {
     return struct {
         const entryInfo = @typeInfo(@TypeOf(e)).@"fn";
-
-        // Should we allow functions passed in here to
         pub fn entry() callconv(.c) void {
             asm volatile ("CPSIE i");
             if (entryInfo.params.len != 0) {
@@ -98,8 +99,13 @@ pub fn makeTaskEntryPoint(e: anytype) TaskEntryPoint {
                     if (t.payload != void) {
                         @compileError("Function passed into createTask should return void, or an error union with void.");
                     }
-                    e() catch {
-                        // Print error?
+                    e() catch |err| {
+                        // We need a way of getting the task's name from here.
+                        // Sure, we could just grab currentTcb right now, but remember,
+                        //  this runs in usermode, so it shouldn't really be able to access that.
+                        // Really, a pointer to information about the task should be passed in here.
+                        var writer = client.stdioWriter();
+                        writer.print("Task died because of: {s}\n", .{@errorName(err)}) catch {};
                     };
                 },
                 .void => {
@@ -109,7 +115,7 @@ pub fn makeTaskEntryPoint(e: anytype) TaskEntryPoint {
                     @compileError("Function passed into createTask should return void, or an error union with void.");
                 },
             }
-            @import("client.zig").terminateTask();
+            client.terminateTask();
         }
     }.entry;
 }

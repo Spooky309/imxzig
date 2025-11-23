@@ -3,10 +3,11 @@ const imx = @import("libIMXRT1064");
 
 const tasks = @import("tasks.zig");
 const timers = @import("timers.zig");
+const heap = @import("heap.zig");
 
 const SyscallCode = @import("client.zig").Code;
 
-pub fn svcHandler(irs: imx.interrupt.ReturnState) callconv(.c) void {
+pub fn svcHandler(irs: imx.interrupt.ReturnState) callconv(.c) *imx.interrupt.ReturnState {
     @setRuntimeSafety(false);
 
     var switchTasks = false;
@@ -74,9 +75,33 @@ pub fn svcHandler(irs: imx.interrupt.ReturnState) callconv(.c) void {
                 }
             }
         },
+        .allocateMemory => {
+            const amt = irs.R4;
+            var err: u32 = 0;
+            if (amt & ~@as(u32, 4095) != amt) {
+                err = 2;
+            } else {
+                const ret = heap.allocator().alignedAlloc(u8, .fromByteUnits(4096), amt) catch blk: {
+                    err = 1;
+                    break :blk @as([*]u8, @ptrFromInt(0x5A5A5A5A))[0..amt];
+                };
+                @memset(ret, 0);
+                tasks.currentTcb.returnState.R5 = @intFromPtr(ret.ptr);
+                tasks.currentTcb.returnState.R6 = ret.len;
+            }
+            tasks.currentTcb.returnState.R4 = err;
+        },
+        .freeMemory => {
+            const ptr = irs.R4;
+            const len = irs.R5;
+            const slice = @as([*]u8, @ptrFromInt(ptr))[0..len];
+            heap.allocator().free(slice);
+        },
     }
 
     if (switchTasks) {
         tasks.scheduler();
     }
+
+    return &tasks.currentTcb.returnState;
 }

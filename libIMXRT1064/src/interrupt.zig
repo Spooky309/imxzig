@@ -40,13 +40,14 @@ pub fn makeISR(comptime func: anytype) *const fn () callconv(.naked) void {
     if (ft.@"fn".params.len == 1 and ft.@"fn".params[0].type.? != ReturnState) {
         @compileError("makeISR: Function parameter must be a ReturnState type");
     }
+    if (ft.@"fn".params.len == 1 and ft.@"fn".return_type.? != *ReturnState) {
+        @compileError("makeISR: Function that takes a ReturnState must return a pointer to one.");
+    }
 
     if (ft.@"fn".params.len == 1) {
         return struct {
             pub fn isr() callconv(.naked) void {
                 asm volatile (
-                    \\PUSH {LR}
-                    \\
                     \\MRS R0, PSP
                     \\MOV R1, LR
                     \\MOV R2, R4
@@ -55,8 +56,16 @@ pub fn makeISR(comptime func: anytype) *const fn () callconv(.naked) void {
                     \\
                     \\BL %[theHandler]
                     \\
+                    \\MOV R4, R0
+                    \\LDR R0, [R4]
+                    \\MSR PSP, R0
+                    \\LDR R0, [R4, #4]
+                    \\MOV LR, R0
+                    \\ADD R0, R4, #8
+                    \\LDM R0, {R4-R11}
+                    \\
                     \\ADD SP, #24
-                    \\POP {PC}
+                    \\BX LR
                     :
                     : [theHandler] "X" (func),
                 );

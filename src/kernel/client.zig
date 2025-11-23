@@ -12,6 +12,8 @@ pub const Code = enum(u8) {
     createTask = 2,
     write = 3,
     read = 4,
+    allocateMemory = 5,
+    freeMemory = 6,
 
     inline fn do(comptime self: @This()) void {
         // j constraint is "immediate integer between 0 and 65535"
@@ -25,6 +27,8 @@ pub const Code = enum(u8) {
 };
 
 pub inline fn write(file: u32, data: []const u8) usize {
+    var amt: usize = undefined;
+
     if (data.len == 0) return 0;
     asm volatile (
         \\MOV R4, %[fd]
@@ -34,18 +38,17 @@ pub inline fn write(file: u32, data: []const u8) usize {
           [data] "r" (&data),
         : .{ .r4 = true, .r5 = true, .r6 = true });
     Code.write.do();
-    asm volatile ("PUSH {R4}");
-
-    var amt: usize = undefined;
     asm volatile (
-        \\POP {R4}
         \\STR R4, %[amt]
         : [amt] "=m" (amt),
-    );
+        :
+        : .{ .r4 = true });
     return amt;
 }
 
 pub inline fn read(file: u32, data: []u8) usize {
+    var amt: usize = undefined;
+
     if (data.len == 0) return 0;
     asm volatile (
         \\MOV R4, %[fd]
@@ -55,14 +58,11 @@ pub inline fn read(file: u32, data: []u8) usize {
           [data] "r" (&data),
         : .{ .r4 = true, .r5 = true, .r6 = true });
     Code.read.do();
-    asm volatile ("PUSH {R4}");
-
-    var amt: usize = undefined;
     asm volatile (
-        \\POP {R4}
         \\STR R4, %[amt]
         : [amt] "=m" (amt),
-    );
+        :
+        : .{ .r4 = true });
     return amt;
 }
 
@@ -88,6 +88,51 @@ pub inline fn createTask(name: []const u8, entry: anytype) void {
           [entryPtr] "r" (ep),
         : .{ .r4 = true, .r5 = true, .r6 = true });
     Code.createTask.do();
+}
+
+pub const AllocationError = error{
+    OutOfMemory,
+    RequestedSizeNotAMultipleOfPageSize,
+};
+
+// Returns a u8 slice of at least numBytes, or an error.
+pub inline fn allocateMemory(numBytes: usize) AllocationError![]u8 {
+    var er: u32 = undefined;
+    var ret: u32 = undefined;
+    var retlen: u32 = undefined;
+
+    asm volatile (
+        \\MOV R4, %[sz]
+        :
+        : [sz] "r" (numBytes),
+        : .{ .r4 = true });
+    Code.allocateMemory.do();
+    asm volatile (
+        \\STR R4, %[er]
+        \\STR R5, %[ret]
+        \\STR R6, %[retlen]
+        : [er] "=m" (er),
+          [ret] "=m" (ret),
+          [retlen] "=m" (retlen),
+        :
+        : .{ .r4 = true, .r5 = true, .r6 = true });
+    if (er == 1) {
+        return error.OutOfMemory;
+    } else if (er == 2) {
+        return error.RequestedSizeNotAMultipleOfPageSize;
+    }
+    return @as([*]u8, @ptrFromInt(ret))[0..retlen];
+}
+
+pub inline fn freeMemory(mem: []u8) void {
+    asm volatile (
+        \\MOV R4, %[ptr]
+        \\MOV R5, %[length]
+        :
+        : [ptr] "r" (mem.ptr),
+          [length] "r" (mem.len),
+        : .{ .r4 = true });
+    Code.freeMemory.do();
 }
 
 // Non syscall
@@ -125,4 +170,53 @@ pub fn stdioWriter() std.Io.Writer {
         .vtable = &stdioVtable,
         .buffer = &.{},
     };
+}
+
+fn kernelAlloc(_: *anyopaque, len: usize, _: std.mem.Alignment, _: usize) ?[*]u8 {
+    const realLen = (len + 4095) & ~@as(usize, 4095);
+    const sl = allocateMemory(realLen) catch return null;
+    return sl.ptr;
+}
+
+fn kernelFree(_: *anyopaque, memory: []u8, _: std.mem.Alignment, _: usize) void {
+    freeMemory(memory);
+}
+
+fn kernelRemap(_: *anyopaque, memory: []u8, _: std.mem.Alignment, new_len: usize, _: usize) ?[*]u8 {
+    if (new_len & ~@as(u32, 4095) != new_len) return null;
+    const newMem = allocateMemory(new_len) catch return null;
+    @memcpy(newMem, memory);
+    freeMemory(memory);
+    return newMem.ptr;
+}
+
+fn kernelResize(_: *anyopaque, _: []u8, _: std.mem.Alignment, _: usize, _: usize) bool {
+    return false;
+}
+
+const kernelAllocatorVTable = std.mem.Allocator.VTable{
+    .alloc = kernelAlloc,
+    .free = kernelFree,
+    .remap = kernelRemap,
+    .resize = kernelResize,
+};
+
+pub fn kernelAllocator() std.mem.Allocator {
+    return std.mem.Allocator{
+        .ptr = @ptrFromInt(0x5A5A5A5A),
+        .vtable = &kernelAllocatorVTable,
+    };
+}
+
+pub const DebugAllocator = std.heap.DebugAllocator(.{
+    .never_unmap = false,
+    .backing_allocator_zeroes = true,
+    .safety = false, // Can't enable this in client just yet.
+    // May want to adjust - allocations bigger or equal to this size will cause a mapping.
+    //  Obviously, if I allocate 4097 bytes, having 8192 bytes dedicated to that allocation is a bit of a waste!
+    .page_size = 4096,
+});
+
+pub fn debugAllocator() DebugAllocator {
+    return DebugAllocator{ .backing_allocator = kernelAllocator() };
 }

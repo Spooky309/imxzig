@@ -10,25 +10,27 @@ const CommandFunc = fn (args: []const []const u8) void;
 
 var stdioWriter: std.Io.Writer = undefined;
 
-// 128b buffer for registering commands. You can just make this bigger if needed.
-//  Maybe if we have a real allocator later on, we can
-var registeredCommandsBuffer: [128]u8 = undefined;
-var registeredCommandsAllocator = std.heap.FixedBufferAllocator.init(&registeredCommandsBuffer);
-var registeredCommands = std.StringHashMap(*const CommandFunc).init(registeredCommandsAllocator.allocator());
+var gpa = client.debugAllocator();
 
-var terminalBuffer: [256]u8 = undefined;
-var terminalBufferTop: u32 = 0;
+// Just here so spamming buttons doesn't overflow memory
+const MAX_TERMINAL_BUFFER_CHARACTERS = 256;
+
+var registeredCommands: std.StringHashMap(*const CommandFunc) = undefined;
+var terminalBuffer = std.ArrayList(u8){};
 var lastCharReceived: u8 = 0;
+
+// Used for splat test command
+var splatBytes: []u8 = undefined;
 
 fn putCommandPrompt() !void {
     _ = try stdioWriter.write("> ");
 }
 
 fn doCommand() !void {
-    if (terminalBufferTop == 0) {
+    if (terminalBuffer.items.len == 0) {
         _ = try stdioWriter.write("\n");
     } else {
-        const cmd = terminalBuffer[0..terminalBufferTop];
+        const cmd = terminalBuffer.items;
         try stdioWriter.print("\n{s}\n", .{cmd});
         if (registeredCommands.get(cmd)) |c| {
             c(&.{});
@@ -38,10 +40,10 @@ fn doCommand() !void {
     }
     try putCommandPrompt();
     try stdioWriter.flush();
-    terminalBufferTop = 0;
+    terminalBuffer.clearRetainingCapacity();
 }
 
-fn receiveChars() !void {
+fn receiveChar() !void {
     var b: [1]u8 = .{0};
 
     _ = client.read(0, &b);
@@ -50,14 +52,11 @@ fn receiveChars() !void {
 
     if (c == '\r' or (c == '\n' and lastCharReceived != '\r')) {
         try doCommand();
-    } else if (c != '\n') {
-        if (terminalBufferTop < terminalBuffer.len) {
-            terminalBuffer[terminalBufferTop] = c;
-            terminalBufferTop += 1;
-            // echo it back to them
-            _ = try stdioWriter.writeAll(&b);
-            try stdioWriter.flush();
-        }
+    } else if (c != '\n' and terminalBuffer.items.len < MAX_TERMINAL_BUFFER_CHARACTERS) {
+        try terminalBuffer.append(gpa.allocator(), c);
+        // echo it back to them
+        _ = try stdioWriter.writeAll(&b);
+        try stdioWriter.flush();
     }
     lastCharReceived = c;
 }
@@ -146,14 +145,13 @@ fn writeArrayAsTable(arr: anytype) !void {
     try stdioWriter.flush();
 }
 
-const splatBytes: [4096]u8 = @splat('A');
 fn testSplatCommand(_: []const []const u8) void {
     stdioWriter.flush() catch {};
 
     const before = client.readPerformanceCounter();
 
     // Call write directly to bypass writer overhead
-    _ = client.write(0, &splatBytes);
+    _ = client.write(0, splatBytes);
 
     const now = client.readPerformanceCounter();
     const delta = if (now >= before) now - before else now + (0xFFFFFFFF - before);
@@ -199,10 +197,14 @@ fn testWaitCommand(_: []const []const u8) void {
     writeArrayAsTable(results) catch {};
 }
 
-var stdioWriterBuffer: [1024]u8 = undefined;
 pub fn task() !void {
     stdioWriter = client.stdioWriter();
-    stdioWriter.buffer = &stdioWriterBuffer;
+    stdioWriter.buffer = try gpa.allocator().alloc(u8, 1024);
+
+    registeredCommands = std.StringHashMap(*const CommandFunc).init(gpa.allocator());
+
+    splatBytes = try gpa.allocator().alloc(u8, 4096);
+    @memset(splatBytes, 'A');
 
     try registerCommand("testSplat", testSplatCommand);
     try registerCommand("testWait", testWaitCommand);
@@ -212,6 +214,6 @@ pub fn task() !void {
     try stdioWriter.flush();
 
     while (true) {
-        try receiveChars();
+        try receiveChar();
     }
 }

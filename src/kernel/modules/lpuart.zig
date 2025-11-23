@@ -105,6 +105,7 @@ fn irqHandler() callconv(.c) void {
                 \\ISB
             );
             const tcb = writeOperations.popFront();
+            tcb.?.tcb.returnState.R4 = tcb.?.buf.len;
             tcb.?.tcb.prod();
 
             if (writeOperations.front()) |newOp| {
@@ -123,6 +124,7 @@ fn irqHandler() callconv(.c) void {
                 \\ISB
             );
             const tcb = readOperations.popFront();
+            tcb.?.tcb.returnState.R4 = tcb.?.buf.len;
             tcb.?.tcb.prod();
 
             if (readOperations.front()) |newOp| {
