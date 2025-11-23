@@ -9,15 +9,23 @@ pub const TaskControlBlock = struct {
     returnState: imx.interrupt.ReturnState = .{},
     stack: []u8 = &.{},
     stdio: ?Pipe = null,
+    prio: Priority = .mid,
+
+    pub fn setPrio(self: *TaskControlBlock, newPrio: Priority) void {
+        if (self.prio == newPrio) return;
+        activeTcbs[@intFromEnum(self.prio)].remove(&self.node);
+        activeTcbs[@intFromEnum(newPrio)].append(&self.node);
+        self.prio = newPrio;
+    }
 
     pub fn waitForProd(self: *TaskControlBlock) void {
-        activeTcbs.remove(&self.node);
-        waitingTcbs.remove(&self.node);
+        activeTcbs[@intFromEnum(self.prio)].remove(&self.node);
+        waitingTcbs.append(&self.node);
     }
 
     pub fn prod(self: *TaskControlBlock) void {
         waitingTcbs.remove(&self.node);
-        activeTcbs.append(&self.node);
+        activeTcbs[@intFromEnum(self.prio)].append(&self.node);
     }
 };
 
@@ -54,7 +62,17 @@ const SCHEDULER_FREQUENCY_HZ = 100;
 const TASK_STACK_SIZE = 8192;
 var tcbPool: std.heap.MemoryPool(TaskControlBlock) = undefined;
 
-pub var activeTcbs = std.DoublyLinkedList{};
+pub const Priority = enum(u8) {
+    realtime = 0,
+    highest = 1,
+    high = 2,
+    mid = 3,
+    low = 4,
+    lowest = 5,
+};
+
+const numPriorityLevels = @typeInfo(Priority).@"enum".fields.len;
+pub var activeTcbs: [numPriorityLevels]std.DoublyLinkedList = [_]std.DoublyLinkedList{.{}} ** numPriorityLevels;
 pub var waitingTcbs = std.DoublyLinkedList{};
 
 pub var currentTcb: *TaskControlBlock = undefined;
@@ -91,19 +109,33 @@ pub fn makeTaskEntryPoint(e: anytype) TaskEntryPoint {
                     @compileError("Function passed into createTask should return void, or an error union with void.");
                 },
             }
-            @import("syscallClient.zig").terminateTask();
+            @import("client.zig").terminateTask();
         }
     }.entry;
+}
+
+// putCurrentBack should be false when we know we don't have a value currentTcb,
+//  such as `destroy` and `init` below.
+fn selectCurrentTCB() void {
+    // Select the first TCB in the list for each priority level from highest to lowest.
+    currentTcb = blk: {
+        for (0..numPriorityLevels) |i| {
+            if (activeTcbs[i].popFirst()) |node| {
+                break :blk @as(*TaskControlBlock, @fieldParentPtr("node", node));
+            }
+        }
+        @panic("No tasks!");
+    };
+
+    // Put it back to the back
+    activeTcbs[@intFromEnum(currentTcb.prio)].append(&currentTcb.node);
 }
 
 // This should only be called from ISRs when we want to switch tasks!!!
 pub fn scheduler() noreturn {
     @setRuntimeSafety(false);
 
-    // Very simple round-robin.
-    const tcb: *TaskControlBlock = @fieldParentPtr("node", activeTcbs.popFirst().?);
-    currentTcb = tcb;
-    activeTcbs.append(&tcb.node);
+    selectCurrentTCB();
 
     // We want to reset MSP to the top of the supervisor stack, otherwise, it never gets changed and every time
     //  this function gets called it climbs a bit lower, until it starts corrupting the heap.
@@ -115,16 +147,16 @@ pub fn scheduler() noreturn {
         \\MOV SP, %[kStackTop]
         \\BX LR
         :
-        : [regs] "r" (&tcb.returnState.R4),
-          [sp] "r" (tcb.returnState.SP),
-          [excReturn] "r" (tcb.returnState.excReturn),
+        : [regs] "r" (&currentTcb.returnState.R4),
+          [sp] "r" (currentTcb.returnState.SP),
+          [excReturn] "r" (currentTcb.returnState.excReturn),
           [kStackTop] "r" (superStack),
     );
 
     unreachable;
 }
 
-pub fn create(name: []const u8, entry: TaskEntryPoint) !void {
+pub fn create(name: []const u8, entry: TaskEntryPoint, initialPrio: ?Priority) !void {
     var newTcb = try tcbPool.create();
     const stack = try heap.allocator().alignedAlloc(u8, .@"8", TASK_STACK_SIZE);
     newTcb.* = .{
@@ -136,6 +168,7 @@ pub fn create(name: []const u8, entry: TaskEntryPoint) !void {
         .stack = stack,
         .name = name,
         .stdio = Pipe.getGlobalPipe("LPUART1"),
+        .prio = initialPrio orelse .mid,
     };
 
     var newStack = @as(*imx.interrupt.StandardStackFrame, @ptrFromInt(newTcb.returnState.SP));
@@ -143,17 +176,17 @@ pub fn create(name: []const u8, entry: TaskEntryPoint) !void {
     newStack.* = .{};
     newStack.PC = @intFromPtr(entry);
 
-    activeTcbs.append(&newTcb.node);
+    activeTcbs[@intFromEnum(newTcb.prio)].append(&newTcb.node);
 }
 
 // If input is currentTcb, it will set currentTcb to the first thing in the list
 pub fn destroy(tcb: *TaskControlBlock) void {
-    activeTcbs.remove(&tcb.node);
+    activeTcbs[@intFromEnum(tcb.prio)].remove(&tcb.node);
     heap.allocator().free(tcb.stack);
     tcbPool.destroy(tcb);
     if (currentTcb == tcb) {
         // Initialize currentTcb to a reasonable value, so any further operations using currentTcb aren't using stale data.
-        currentTcb = @fieldParentPtr("node", activeTcbs.first.?);
+        selectCurrentTCB();
     }
 }
 
@@ -179,7 +212,7 @@ pub fn init() !void {
 
     tcbPool = std.heap.MemoryPool(TaskControlBlock).init(heap.allocator());
 
-    try create("Idle", makeTaskEntryPoint(idleTask));
+    try create("Idle", makeTaskEntryPoint(idleTask), .lowest);
 
-    currentTcb = @fieldParentPtr("node", activeTcbs.first.?);
+    selectCurrentTCB();
 }

@@ -1,12 +1,14 @@
 const std = @import("std");
 
-const syscall = @import("kernel.zig").syscall;
+const client = @import("kernel.zig").client;
 
 const Error = error{
     CommandNameAlreadyUsed,
 };
 
 const CommandFunc = fn (args: []const []const u8) void;
+
+var stdioWriter: std.Io.Writer = undefined;
 
 // 128b buffer for registering commands. You can just make this bigger if needed.
 //  Maybe if we have a real allocator later on, we can
@@ -18,28 +20,30 @@ var terminalBuffer: [256]u8 = undefined;
 var terminalBufferTop: u32 = 0;
 var lastCharReceived: u8 = 0;
 
-fn putCommandPrompt() void {
-    _ = syscall.write(0, "> ");
+fn putCommandPrompt() !void {
+    _ = try stdioWriter.write("> ");
 }
 
 fn doCommand() !void {
-    const cmd = terminalBuffer[0..terminalBufferTop];
-    _ = syscall.write(0, "\n");
-    _ = syscall.write(0, cmd);
-    _ = syscall.write(0, "\n");
-    if (registeredCommands.get(cmd)) |c| {
-        c(&.{});
+    if (terminalBufferTop == 0) {
+        _ = try stdioWriter.write("\n");
     } else {
-        _ = syscall.write(0, "Unrecognized command\n");
+        const cmd = terminalBuffer[0..terminalBufferTop];
+        try stdioWriter.print("\n{s}\n", .{cmd});
+        if (registeredCommands.get(cmd)) |c| {
+            c(&.{});
+        } else {
+            _ = try stdioWriter.write("Unrecognized command\n");
+        }
     }
-    putCommandPrompt();
+    try putCommandPrompt();
     terminalBufferTop = 0;
 }
 
 fn receiveChars() !void {
     var b: [1]u8 = .{0};
 
-    _ = syscall.read(0, &b);
+    _ = client.read(0, &b);
 
     const c = b[0];
 
@@ -50,7 +54,7 @@ fn receiveChars() !void {
             terminalBuffer[terminalBufferTop] = c;
             terminalBufferTop += 1;
             // echo it back to them
-            _ = syscall.write(0, &b);
+            _ = try stdioWriter.write(&b);
         }
     }
     lastCharReceived = c;
@@ -63,13 +67,47 @@ pub fn registerCommand(comptime name: []const u8, comptime cmd: CommandFunc) !vo
 }
 
 fn helpCommand(_: []const []const u8) void {
-    _ = syscall.write(0, "There is no help yet.\n");
+    _ = stdioWriter.write("There is no help yet.\n") catch {};
+}
+
+fn testWait(ms: u32) !void {
+    const before = client.readPerformanceCounter();
+    client.sleep(ms);
+    const now = client.readPerformanceCounter();
+    const delta = if (now >= before) now - before else now + (0xFFFFFFFF - before);
+    const deltaMs = delta / (client.getPerformanceCounterFrequencyHz() / 1_000);
+
+    try stdioWriter.print("Expected:\t{}ms\tActual: {}ms\n", .{ ms, deltaMs });
+}
+
+const splatBytes: [4096]u8 = @splat('A');
+fn testSplatCommand(_: []const []const u8) void {
+    const before = client.readPerformanceCounter();
+    _ = stdioWriter.write(&splatBytes) catch {};
+    const now = client.readPerformanceCounter();
+    const delta = if (now >= before) now - before else now + (0xFFFFFFFF - before);
+    const deltaMs = delta / (client.getPerformanceCounterFrequencyHz() / 1_000);
+    stdioWriter.print("\nThat was {} bytes. It took us {}ms (from process perspective)\n", .{ splatBytes.len, deltaMs }) catch {};
+}
+
+fn testWaitCommand(_: []const []const u8) void {
+    _ = stdioWriter.write("Testing wait times\n") catch {};
+    testWait(1) catch {};
+    testWait(5) catch {};
+    testWait(10) catch {};
+    testWait(100) catch {};
+    testWait(500) catch {};
+    testWait(1000) catch {};
 }
 
 pub fn task() !void {
+    stdioWriter = client.stdioWriter();
+
+    try registerCommand("testSplat", testSplatCommand);
+    try registerCommand("testWait", testWaitCommand);
     try registerCommand("help", helpCommand);
 
-    putCommandPrompt();
+    try putCommandPrompt();
     while (true) {
         try receiveChars();
     }

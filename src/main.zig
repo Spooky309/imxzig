@@ -24,7 +24,8 @@ const imx = @import("libIMXRT1064");
 
 const terminal = @import("terminal.zig");
 const winbond_lut = @import("winbond_lut.zig");
-const kernel = @import("kernel.zig");
+const client = @import("kernel.zig").client;
+const kernelStartup = @import("kernel/startup.zig");
 
 // These need to exist. Annoying, but deal with it.
 pub const panic = imx.panic.panic;
@@ -107,7 +108,7 @@ fn initLED() void {
 }
 
 fn init() !void {
-    _ = kernel.syscall.write(0,
+    _ = client.write(0,
         \\
         \\----------------------------------
         \\IMXZIG
@@ -115,7 +116,7 @@ fn init() !void {
         \\
     );
 
-    kernel.syscall.createTask("Terminal", terminal.task);
+    client.createTask("Terminal", terminal.task);
 }
 
 fn main() !void {
@@ -130,5 +131,5 @@ fn main() !void {
     // imx.gpio.gpio2.pinWrite(bluePin, false);
     // imx.gpio.gpio2.pinWrite(greenPin, false);
 
-    try kernel.go(init);
+    try kernelStartup.go(init);
 }

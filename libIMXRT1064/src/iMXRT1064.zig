@@ -10,6 +10,7 @@ pub const lpuart = @import("lpuart.zig");
 pub const interrupt = @import("interrupt.zig");
 pub const watchdog = @import("watchdog.zig");
 pub const dma = @import("dma.zig");
+pub const gpt = @import("gpt.zig");
 
 pub const nvic = @import("m7/nvic.zig");
 
